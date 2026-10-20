@@ -1,0 +1,86 @@
+# iOS app tests: the SDK inside a real SwiftUI app on the simulator, driven by UI tests,
+# sending to a local capture server (examples/RaindropTestApp). Also checks the library
+# builds in app-extension-only mode.
+name: iOS app
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  extension-safe:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Build Raindrop with APPLICATION_EXTENSION_API_ONLY
+        run: |
+          set +e
+          xcodebuild -scheme raindrop-swift -destination "generic/platform=iOS" build \
+            CODE_SIGNING_ALLOWED=NO APPLICATION_EXTENSION_API_ONLY=YES \
+            OTHER_SWIFT_FLAGS="-warnings-as-errors" > build.log 2>&1
+          code=$?
+          grep -E "error:|warning:" build.log | sort -u | head -40 || true
+          tail -3 build.log
+          exit $code
+
+  ui-tests:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Start capture server
+        run: |
+          python3 examples/RaindropTestApp/capture_server.py --port 8790 > "$RUNNER_TEMP/capture.log" 2>&1 &
+          for _ in $(seq 1 50); do curl -sf http://localhost:8790/__health >/dev/null && exit 0; sleep 0.2; done
+          cat "$RUNNER_TEMP/capture.log"; exit 1
+      - name: Generate Xcode project
+        working-directory: examples/RaindropTestApp
+        run: xcodegen generate
+      - name: Pick an iPhone simulator
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          d = json.load(sys.stdin)["devices"]
+          ios = sorted((r for r in d if "iOS" in r), key=lambda r: [int(x) for x in r.rsplit("iOS-", 1)[1].split("-")])
+          for runtime in reversed(ios):
+              for dev in d[runtime]:
+                  if dev["name"].startswith("iPhone"):
+                      print(dev["udid"]); sys.exit()
+          ')
+          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+          xcrun simctl list devices available | grep "$UDID"
+      - name: Run UI tests on the simulator
+        working-directory: examples/RaindropTestApp
+        run: |
+          set +e
+          xcodebuild test -project RaindropTestApp.xcodeproj -scheme RaindropTestApp \
+            -destination "id=$SIM_UDID" -resultBundlePath "$RUNNER_TEMP/ui-tests.xcresult" \
+            > "$RUNNER_TEMP/xcodebuild.log" 2>&1
+          code=$?
+          grep -E "error:|Test Case .*(passed|failed)|Executed|\*\* TEST" "$RUNNER_TEMP/xcodebuild.log" | tail -60
+          exit $code
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ios-app-tests
+          path: |
+            ${{ runner.temp }}/ui-tests.xcresult
+            ${{ runner.temp }}/xcodebuild.log
+            ${{ runner.temp }}/capture.log
+          if-no-files-found: warn

@@ -1,0 +1,259 @@
+# Conformance: fault + prod lanes against Raindrop's cross-SDK conformance suite.
+#
+#   * fault-lane: every PR; local capture/fault server, no Raindrop credentials.
+#   * prod-lane:  non-fork PRs with secrets; real ingest + public Query API readback.
+#
+# The suite repository comes from the HARNESS_REPO secret (a secret so it's masked in
+# logs) and is pinned to the commit SHA in HARNESS_REF. HARNESS_READ_TOKEN must have
+# Contents:read on it. Without these secrets (forks) both lanes SKIP LOUDLY.
+#
+# The runner exits non-zero on an unexpected failure OR an unexpected pass
+# (ratchet: conformance/failures.txt). `status: experimental` scenarios never
+# affect the exit code.
+#
+# The driver is built in release mode and run as a binary (never `swift run`):
+# hot-path scenarios allow 100 ms per step.
+
+name: Conformance
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  HARNESS_REPO: ${{ secrets.HARNESS_REPO }}
+  HARNESS_REF: bd13f71e631d4423dfbfcebbf773202475fc0845
+  SERVER_URL: http://127.0.0.1:8787
+  DRIVER_BIN: ${{ github.workspace }}/conformance/.build/release/raindrop-conformance
+
+jobs:
+  fault-lane:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Gate (fork-safety)
+        id: gate
+        env:
+          HARNESS_READ_TOKEN: ${{ secrets.HARNESS_READ_TOKEN }}
+        run: |
+          if [ -n "$HARNESS_REPO" ] && [ -n "$HARNESS_READ_TOKEN" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::HARNESS_REPO / HARNESS_READ_TOKEN unavailable (fork, or not configured for this repo). Skipping the fault lane."
+          fi
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        if: steps.gate.outputs.run == 'true'
+        with:
+          persist-credentials: false
+      - name: Checkout harness (pinned)
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: ${{ env.HARNESS_REPO }}
+          ref: ${{ env.HARNESS_REF }}
+          path: harness
+          token: ${{ secrets.HARNESS_READ_TOKEN }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        if: steps.gate.outputs.run == 'true'
+        with:
+          node-version: "20"
+      - name: Build harness server + runner
+        if: steps.gate.outputs.run == 'true'
+        working-directory: harness
+        run: |
+          npm --prefix server ci && npm --prefix server run build
+          npm --prefix runner ci && npm --prefix runner run build
+      - name: Build conformance driver
+        if: steps.gate.outputs.run == 'true'
+        run: swift build -c release --package-path conformance
+      - name: Start fault server
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          node harness/server/dist/src/index.js --port 8787 > "$RUNNER_TEMP/fault-server.log" 2>&1 &
+          echo "FAULT_SERVER_PID=$!" >> "$GITHUB_ENV"
+          for _ in $(seq 1 50); do
+            curl -sf "$SERVER_URL/__control/v1/health" >/dev/null && exit 0
+            sleep 0.2
+          done
+          cat "$RUNNER_TEMP/fault-server.log"; exit 1
+      - name: Run conformance runner (fault lane)
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          set -o pipefail
+          node harness/runner/dist/src/index.js \
+            --driver "$DRIVER_BIN" \
+            --failures conformance/failures.txt \
+            --lane fault \
+            --server "$SERVER_URL" \
+            --report "$RUNNER_TEMP/report.json" \
+            2>&1 | tee "$RUNNER_TEMP/runner-output.txt"
+      - name: Require application Git regressions
+        if: always() && steps.gate.outputs.run == 'true'
+        run: node harness/scripts/check-app-git-results.mjs "$RUNNER_TEMP/report.json"
+      - name: Summary
+        if: always() && steps.gate.outputs.run == 'true'
+        run: |
+          { echo "## Conformance — fault lane"; echo "Suite: \`${HARNESS_REF}\`"; echo '```';
+            cat "$RUNNER_TEMP/runner-output.txt" 2>/dev/null; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload report
+        if: always() && steps.gate.outputs.run == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: conformance-fault-report
+          path: ${{ runner.temp }}/report.json
+          if-no-files-found: warn
+
+  fault-lane-linux:
+    # The nightly matrix runs drivers on ubuntu: verify Linux FoundationNetworking
+    # (curl-based URLSession) classifies timeouts and dropped connections the same way.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Gate (fork-safety)
+        id: gate
+        env:
+          HARNESS_READ_TOKEN: ${{ secrets.HARNESS_READ_TOKEN }}
+        run: |
+          if [ -n "$HARNESS_REPO" ] && [ -n "$HARNESS_READ_TOKEN" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::HARNESS_REPO / HARNESS_READ_TOKEN unavailable (fork, or not configured for this repo). Skipping the fault lane."
+          fi
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        if: steps.gate.outputs.run == 'true'
+        with:
+          persist-credentials: false
+      - name: Checkout harness (pinned)
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: ${{ env.HARNESS_REPO }}
+          ref: ${{ env.HARNESS_REF }}
+          path: harness
+          token: ${{ secrets.HARNESS_READ_TOKEN }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        if: steps.gate.outputs.run == 'true'
+        with:
+          node-version: "20"
+      - name: Build harness server + runner
+        if: steps.gate.outputs.run == 'true'
+        working-directory: harness
+        run: |
+          npm --prefix server ci && npm --prefix server run build
+          npm --prefix runner ci && npm --prefix runner run build
+      - uses: swift-actions/setup-swift@7ca6abe6b3b0e8b5421b88be48feee39cbf52c6a # v2.4.0
+        if: steps.gate.outputs.run == 'true'
+        with:
+          swift-version: "6.1"
+      - name: Build conformance driver
+        if: steps.gate.outputs.run == 'true'
+        run: swift build -c release --package-path conformance
+      - name: Start fault server
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          node harness/server/dist/src/index.js --port 8787 > "$RUNNER_TEMP/fault-server.log" 2>&1 &
+          echo "FAULT_SERVER_PID=$!" >> "$GITHUB_ENV"
+          for _ in $(seq 1 50); do
+            curl -sf "$SERVER_URL/__control/v1/health" >/dev/null && exit 0
+            sleep 0.2
+          done
+          cat "$RUNNER_TEMP/fault-server.log"; exit 1
+      - name: Run conformance runner (fault lane)
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          set -o pipefail
+          node harness/runner/dist/src/index.js \
+            --driver "$DRIVER_BIN" \
+            --failures conformance/failures.txt \
+            --lane fault \
+            --server "$SERVER_URL" \
+            --report "$RUNNER_TEMP/report.json" \
+            2>&1 | tee "$RUNNER_TEMP/runner-output.txt"
+      - name: Require application Git regressions
+        if: always() && steps.gate.outputs.run == 'true'
+        run: node harness/scripts/check-app-git-results.mjs "$RUNNER_TEMP/report.json"
+      - name: Summary
+        if: always() && steps.gate.outputs.run == 'true'
+        run: |
+          { echo "## Conformance — fault lane (Linux)"; echo "Suite: \`${HARNESS_REF}\`"; echo '```';
+            cat "$RUNNER_TEMP/runner-output.txt" 2>/dev/null; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload report
+        if: always() && steps.gate.outputs.run == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: conformance-fault-report-linux
+          path: ${{ runner.temp }}/report.json
+          if-no-files-found: warn
+
+  prod-lane:
+    runs-on: macos-15
+    timeout-minutes: 50
+    steps:
+      - name: Gate (secrets + fork-safety)
+        id: gate
+        env:
+          HARNESS_READ_TOKEN: ${{ secrets.HARNESS_READ_TOKEN }}
+          RAINDROP_WRITE_KEY: ${{ secrets.RAINDROP_WRITE_KEY }}
+          RAINDROP_QUERY_API_KEY: ${{ secrets.RAINDROP_QUERY_API_KEY }}
+        run: |
+          if [ -n "$HARNESS_REPO" ] && [ -n "$HARNESS_READ_TOKEN" ] && [ -n "$RAINDROP_WRITE_KEY" ] && [ -n "$RAINDROP_QUERY_API_KEY" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Prod lane needs HARNESS_REPO + HARNESS_READ_TOKEN + RAINDROP_WRITE_KEY + RAINDROP_QUERY_API_KEY. Skipping."
+          fi
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        if: steps.gate.outputs.run == 'true'
+        with:
+          persist-credentials: false
+      - name: Checkout harness (pinned)
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: ${{ env.HARNESS_REPO }}
+          ref: ${{ env.HARNESS_REF }}
+          path: harness
+          token: ${{ secrets.HARNESS_READ_TOKEN }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        if: steps.gate.outputs.run == 'true'
+        with:
+          node-version: "20"
+      - name: Build harness runner
+        if: steps.gate.outputs.run == 'true'
+        working-directory: harness
+        run: npm --prefix runner ci && npm --prefix runner run build
+      - name: Build conformance driver
+        if: steps.gate.outputs.run == 'true'
+        run: swift build -c release --package-path conformance
+      - name: Run conformance runner (prod lane)
+        if: steps.gate.outputs.run == 'true'
+        env:
+          RAINDROP_SINK_URL: https://api.raindrop.ai
+          RAINDROP_WRITE_KEY: ${{ secrets.RAINDROP_WRITE_KEY }}
+          RAINDROP_QUERY_URL: https://query.raindrop.ai
+          RAINDROP_QUERY_API_KEY: ${{ secrets.RAINDROP_QUERY_API_KEY }}
+        run: |
+          set -o pipefail
+          node harness/runner/dist/src/index.js \
+            --driver "$DRIVER_BIN" \
+            --failures conformance/failures.txt \
+            --lane prod \
+            --report "$RUNNER_TEMP/report.json" \
+            2>&1 | tee "$RUNNER_TEMP/runner-output.txt"
+      - name: Summary
+        if: always() && steps.gate.outputs.run == 'true'
+        run: |
+          { echo "## Conformance — prod lane"; echo '```'; cat "$RUNNER_TEMP/runner-output.txt" 2>/dev/null; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

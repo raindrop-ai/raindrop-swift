@@ -1,0 +1,53 @@
+# XcodeGen spec for the iOS test app (`brew install xcodegen && xcodegen generate`).
+name: RaindropTestApp
+options:
+  bundleIdPrefix: ai.raindrop
+  deploymentTarget:
+    iOS: "16.0"
+packages:
+  Raindrop:
+    path: ../..
+targets:
+  RaindropTestApp:
+    type: application
+    platform: iOS
+    sources: [App]
+    dependencies:
+      - package: Raindrop
+        product: Raindrop
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: RaindropTestApp
+        UILaunchScreen: {}
+        # What the docs tell app teams to add for Workshop/local endpoints.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    settings:
+      base:
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        TARGETED_DEVICE_FAMILY: "1"
+  RaindropTestAppUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies:
+      - target: RaindropTestApp
+    info:
+      path: UITests/Info.plist
+      properties:
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+    settings:
+      base:
+        SWIFT_VERSION: "5.0"
+        TEST_TARGET_NAME: RaindropTestApp
+schemes:
+  RaindropTestApp:
+    build:
+      targets:
+        RaindropTestApp: all
+    test:
+      targets:
+        - RaindropTestAppUITests

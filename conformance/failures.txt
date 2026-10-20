@@ -1,0 +1,1 @@
+retry-after-cap@fault: missing_feature  # experimental scenario allows 2 s total, but the cross-SDK Retry-After cap norm is 30 s; raindrop-swift caps at 30 s (maxRetryAfter) and parks the batch when the capped wait exceeds the flush deadline, so only 1 attempt is recorded.

@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Swift version
+        run: swift --version
+      - name: Build (warnings as errors)
+        run: swift build -Xswiftc -warnings-as-errors
+      - name: Test
+        run: swift test
+      - name: Build conformance driver
+        run: swift build -c release --package-path conformance
+
+  apple-platforms:
+    runs-on: macos-15
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        destination:
+          - "generic/platform=iOS"
+          - "generic/platform=iOS Simulator"
+          - "generic/platform=tvOS Simulator"
+          - "generic/platform=watchOS Simulator"
+          - "generic/platform=visionOS Simulator"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Build Raindrop for ${{ matrix.destination }}
+        run: |
+          set +e
+          xcodebuild -scheme raindrop-swift -destination "${{ matrix.destination }}" \
+            -skipPackagePluginValidation build CODE_SIGNING_ALLOWED=NO \
+            OTHER_SWIFT_FLAGS="-warnings-as-errors" > build.log 2>&1
+          code=$?
+          grep -E "error:|warning:" build.log | sort -u | head -40 || true
+          tail -5 build.log
+          exit $code
+
+  linux:
+    runs-on: ubuntu-latest
+    container: swift:6.1-noble
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Build
+        run: swift build
+      - name: Test
+        run: swift test
