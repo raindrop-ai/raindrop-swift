@@ -1,1 +1,2 @@
+retry-408-then-200@fault: missing_feature  # New SDK-contract scenario; a 408 is treated as a permanent rejection and not retried (CONTRACT 15.2, rule C9: 408 is transient).
 retry-after-cap@fault: missing_feature  # experimental scenario allows 2 s total, but the cross-SDK Retry-After cap norm is 30 s; raindrop-swift caps at 30 s (maxRetryAfter) and parks the batch when the capped wait exceeds the flush deadline, so only 1 attempt is recorded.
