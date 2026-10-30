@@ -9,7 +9,7 @@
 import Foundation
 import Raindrop
 
-let driverVersion = "0.2.0"
+let driverVersion = "0.3.0"
 
 let capabilities = [
     "events.track",
@@ -22,6 +22,14 @@ let capabilities = [
     "signal",
     "timing.wait",
     "multi_client",
+    "events.resume",
+    "events.optional_user_id",
+    "traces.retroactive_span",
+    "traces.span_parent",
+    "subagents.detached_dispatch",
+    "subagents.detached_child",
+    "privacy.redact_pii",
+    "logs.capture",
 ]
 
 // Plain string arrays: the suite's coverage tooling reads these from source.
@@ -66,6 +74,25 @@ if CommandLine.arguments.contains("--describe") {
     exit(0)
 }
 
+// MARK: SDK log capture (CONTRACT 14)
+
+/// SDK log records as JSON lines for the runner, through the SDK's public log hook.
+let harnessLog: (@Sendable (LogLevel, String) -> Void)? = {
+    guard let path = ProcessInfo.processInfo.environment["RAINDROP_HARNESS_LOG"], !path.isEmpty else { return nil }
+    let lock = NSLock()
+    return { level, message in
+        let record: JSONValue = ["level": .string(level == .warning ? "warn" : "debug"), "message": .string(message)]
+        guard let data = try? JSONEncoder().encode(record) else { return }
+        lock.withLock {
+            if !FileManager.default.fileExists(atPath: path) { FileManager.default.createFile(atPath: path, contents: nil) }
+            guard let handle = FileHandle(forWritingAtPath: path) else { return }
+            handle.seekToEndOfFile()
+            handle.write(data + Data("\n".utf8))
+            try? handle.close()
+        }
+    }
+}()
+
 // MARK: Arg helpers
 
 struct Args {
@@ -91,6 +118,17 @@ struct Args {
     func required(_ key: String) -> String {
         guard let s = string(key) else { fail("\(step) requires \(key)") }
         return s
+    }
+
+    func json(_ key: String) -> JSONValue? { raw[key] }
+
+    func int(_ key: String) -> Int64? {
+        switch raw[key] {
+        case nil: return nil
+        case .int(let i)?: return i
+        case .double(let d)? where d.rounded() == d: return Int64(d)
+        default: fail("\(step).\(key) must be an integer")
+        }
     }
 
     func object(_ key: String) -> [String: JSONValue]? {
@@ -139,6 +177,8 @@ struct Args {
 final class Clients: @unchecked Sendable {
     private var byHandle: [String: RaindropClient] = [:]
     private var bindings: [String: Interaction] = [:]   // one open interaction per client
+    /// Carriers produced by dispatch_subagent, by child event id (shared by every client).
+    var carriers: [String: [String: String]] = [:]
 
     func bind(_ a: Args, _ i: Interaction) {
         guard bindings[a.client] == nil else { fail("client \(a.client) already has an open interaction") }
@@ -167,6 +207,11 @@ final class Clients: @unchecked Sendable {
         config.endpoint = endpoint
         config.appGit = appGit(a)
         config.debug = env["RAINDROP_DEBUG"] == "1"
+        if let raw = a.raw["redact_pii"] {
+            guard raw == .bool(true) else { fail("init.redact_pii must be true") }
+            config.redactPii = true
+        }
+        config.logHandler = harnessLog
         byHandle[handle] = RaindropClient(configuration: config)
     }
 
@@ -204,12 +249,12 @@ let signalArgs: Set<String> = ["event_id", "name", "signal_type", "timestamp", "
 func run(_ name: String, _ raw: [String: JSONValue], _ clients: Clients) async {
     switch name {
     case "init":
-        clients.initialize(Args(step: name, raw: raw, allowed: ["project", "app_git"]))
+        clients.initialize(Args(step: name, raw: raw, allowed: ["project", "app_git", "redact_pii"]))
 
     case "track_ai":
         let a = Args(step: name, raw: raw, allowed: trackAiArgs)
         clients.get(a).trackAi(AiEvent(
-            userId: a.required("user_id"), event: a.required("event"),
+            userId: a.string("user_id") ?? "", event: a.required("event"),
             input: a.string("input"), output: a.string("output"), model: a.string("model"),
             convoId: a.string("convo_id"), eventId: a.string("event_id"), timestamp: a.date("timestamp"),
             properties: a.object("properties") ?? [:], attachments: a.attachments(),
@@ -218,7 +263,7 @@ func run(_ name: String, _ raw: [String: JSONValue], _ clients: Clients) async {
     case "track":
         let a = Args(step: name, raw: raw, allowed: trackArgs)
         clients.get(a).trackEvent(Event(
-            userId: a.required("user_id"), event: a.required("event"), eventId: a.string("event_id"),
+            userId: a.string("user_id") ?? "", event: a.required("event"), eventId: a.string("event_id"),
             timestamp: a.date("timestamp"), properties: a.object("properties") ?? [:],
             attachments: a.attachments()))
 
@@ -247,7 +292,7 @@ func run(_ name: String, _ raw: [String: JSONValue], _ clients: Clients) async {
         let a = Args(step: name, raw: raw, allowed: ["user_id", "event", "event_id", "timestamp", "input", "model",
                                                      "convo_id", "properties", "attachments"])
         let ix = clients.get(a).begin(BeginOptions(
-            userId: a.required("user_id"), event: a.required("event"), input: a.string("input"),
+            userId: a.string("user_id") ?? "", event: a.required("event"), input: a.string("input"),
             model: a.string("model"), convoId: a.string("convo_id"), eventId: a.string("event_id"),
             timestamp: a.date("timestamp"), properties: a.object("properties") ?? [:], attachments: a.attachments()))
         clients.bind(a, ix)
@@ -266,6 +311,56 @@ func run(_ name: String, _ raw: [String: JSONValue], _ clients: Clients) async {
                                       properties: a.object("properties") ?? [:], attachments: a.attachments(),
                                       timestamp: a.date("timestamp"))
         clients.unbind(a)
+
+    case "resume":
+        // CONTRACT 9.2: bind to an event begun elsewhere by id. Nothing is sent now; identity
+        // the step supplies rides on later updates, and omitted identity is never defaulted.
+        let a = Args(step: name, raw: raw, allowed: ["event_id", "user_id", "event", "convo_id"])
+        let ix = clients.get(a).resumeInteraction(eventId: a.required("event_id"))
+        clients.bind(a, ix)
+        if a.string("user_id") != nil || a.string("event") != nil || a.string("convo_id") != nil {
+            ix.update(InteractionUpdate(userId: a.string("user_id"), event: a.string("event"),
+                                        convoId: a.string("convo_id")))
+        }
+
+    case "track_tool":
+        // CONTRACT 12: a tool span recorded after the fact on the open event.
+        let a = Args(step: name, raw: raw, allowed: ["name", "input", "output", "error", "start_time",
+                                                     "duration_ms", "end_time", "parent"])
+        var parent: SpanParent?
+        if let p = a.object("parent") {
+            guard let trace = p["trace_id"]?.stringValue, let span = p["span_id"]?.stringValue else {
+                fail("track_tool.parent needs trace_id and span_id")
+            }
+            parent = .ref(SpanRef(traceId: trace, spanId: span))
+        }
+        clients.bound(a).trackTool(a.required("name"), input: a.json("input"), output: a.json("output"),
+                                   error: a.string("error"), duration: a.int("duration_ms").map { .milliseconds($0) },
+                                   startTime: a.date("start_time"), endTime: a.date("end_time"), parent: parent)
+
+    case "dispatch_subagent":
+        // CONTRACT 13.1: a dispatch span on the open event, plus the header carrier.
+        let a = Args(step: name, raw: raw, allowed: ["name", "child_event_id", "input"])
+        let handoff = clients.bound(a).subagent(name: a.required("name"), input: a.json("input"),
+                                                childEventId: a.required("child_event_id"))
+        clients.carriers[handoff.childEventId] = handoff.headers
+
+    case "run_subagent":
+        // CONTRACT 13.2: the child reports as its own event from the carrier.
+        let a = Args(step: name, raw: raw, allowed: ["output", "carrier_from", "headers", "user_id", "tool_name"])
+        let headers: [String: String]
+        if let source = a.string("carrier_from") {
+            guard let carrier = clients.carriers[source] else { fail("no carrier was dispatched for \(source)") }
+            headers = carrier
+        } else {
+            headers = a.stringMap("headers")
+        }
+        let child = clients.get(a).beginSubagent(headers: headers, userId: a.string("user_id"))
+        if let tool = a.string("tool_name") {
+            // The child's work: one tool span while its run is open, carrying the link back.
+            child.trackTool(tool, duration: .milliseconds(1))
+        }
+        await child.finish(output: a.required("output"))
 
     case "flush":
         let a = Args(step: name, raw: raw, allowed: [])

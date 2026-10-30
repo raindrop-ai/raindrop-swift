@@ -58,7 +58,8 @@ struct Batch: Sendable {
 /// - `flush` / `close` drains are bounded by a deadline. They may wait out a
 ///   capped `Retry-After` or backoff inside that deadline; background drains never wait.
 ///   They park the batch and set a not-before time for the route instead.
-/// - 2xx = delivered regardless of body; non-429 4xx = dropped, never retried.
+/// - 2xx = delivered regardless of body (`rejected` / `warnings` in it are logged); 408, 429
+///   and 5xx are retried; any other 4xx is dropped, never retried.
 final class Pipeline: @unchecked Sendable {
     enum Mode { case background, lifecycle }
 
@@ -565,8 +566,9 @@ final class Pipeline: @unchecked Sendable {
                 switch response.status {
                 case 200..<300:
                     log.debug("delivered \(batch.count) \(batch.route.rawValue) payload(s)")
+                    reportIngestResponse(response.body, route: batch.route)
                     return .delivered
-                case 429, 500...599:
+                case 408, 429, 500...599:
                     let delay = retryDelay(response, attempt: attempts)
                     log.debug("HTTP \(response.status) on \(batch.route.rawValue); retry in \(delay)")
                     guard mode == .lifecycle, attempts < config.maxAttempts, let deadline,
@@ -594,6 +596,53 @@ final class Pipeline: @unchecked Sendable {
                 return .park(after: backoff(attempt: attempts))
             }
         }
+    }
+
+    /// A 2xx is delivered whatever its body says. Ingest lists items it did not store under
+    /// `rejected` and input it accepted with changes (such as ignored fields) under `warnings`;
+    /// both are warnings. An empty, non-JSON or unexpected body is ignored.
+    private func reportIngestResponse(_ body: Data, route: Route) {
+        guard !body.isEmpty, let object = try? JSONDecoder().decode(JSONValue.self, from: body).objectValue else { return }
+        if case .array(let rejected)? = object["rejected"], !rejected.isEmpty {
+            let quoted = rejected.prefix(3).map { item -> String in
+                let o = item.objectValue ?? [:]
+                let issues: [String]
+                if case .array(let list)? = o["issues"] {
+                    issues = list.compactMap { issue in
+                        guard let i = issue.objectValue else { return nil }
+                        let message = i["message"]?.stringValue ?? "invalid"
+                        if let path = i["path"]?.stringValue, !path.isEmpty { return "\(path): \(message)" }
+                        return message
+                    }
+                } else {
+                    issues = []
+                }
+                return "\(Self.itemLabel(o)) (\(issues.isEmpty ? "invalid" : issues.joined(separator: "; ")))"
+            }
+            let more = rejected.count > 3 ? " (+\(rejected.count - 3) more)" : ""
+            log.warn("ingest.rejected.\(route.rawValue)",
+                     "\(route.rawValue): ingest rejected \(rejected.count) item(s), which were not stored: "
+                        + quoted.joined(separator: " | ") + more)
+        }
+        if case .array(let warnings)? = object["warnings"], !warnings.isEmpty {
+            let quoted = warnings.prefix(3).map { item -> String in
+                let o = item.objectValue ?? [:]
+                if let message = o["message"]?.stringValue, !message.isEmpty { return "\(Self.itemLabel(o)): \(message)" }
+                var fields: [String] = []
+                if case .array(let list)? = o["fields"] { fields = list.compactMap(\.stringValue) }
+                return "\(Self.itemLabel(o)): ignored \(fields.isEmpty ? "input" : fields.joined(separator: ", "))"
+            }
+            let more = warnings.count > 3 ? " (+\(warnings.count - 3) more)" : ""
+            log.warn("ingest.warnings.\(route.rawValue)",
+                     "\(route.rawValue): ingest accepted \(warnings.count) item(s) with changes: "
+                        + quoted.joined(separator: " | ") + more)
+        }
+    }
+
+    private static func itemLabel(_ item: [String: JSONValue]) -> String {
+        if let id = item["event_id"]?.stringValue, !id.isEmpty { return "event \(id)" }
+        if case .int(let i)? = item["index"] { return "item \(i)" }
+        return "item"
     }
 
     private func retryDelay(_ response: HTTPResponse, attempt: Int) -> Duration {
