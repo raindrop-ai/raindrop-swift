@@ -116,7 +116,7 @@ jobs:
   fault-lane-linux:
     # The nightly matrix runs drivers on ubuntu: verify Linux FoundationNetworking
     # (curl-based URLSession) classifies timeouts and dropped connections the same way.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # setup-swift does not support newer Ubuntu images yet
     timeout-minutes: 20
     steps:
       - name: Gate (fork-safety)

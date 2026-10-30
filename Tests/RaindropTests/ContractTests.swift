@@ -207,3 +207,29 @@ private func date(_ iso: String) -> Date {
         #expect(h.headers["traceparent"]?.hasPrefix("00-\(h.traceId!)-\(h.parentSpanId!)") == true)
     }
 }
+
+/// `flush()` and `close()` wait on the drain with a deadline. A drain that finished must never
+/// read as timed out, however the drain and the deadline timer get scheduled.
+@Suite struct BoundedWait {
+    @Test func aFinishedTaskIsNeverReportedAsTimedOut() async {
+        // Many waits at once keep every thread busy, which is when the timer used to win.
+        let timedOut = await withTaskGroup(of: Bool.self) { group in
+            for _ in 0..<2_000 {
+                group.addTask {
+                    let done = Task<Int, Never> { 7 }
+                    return await Pipeline.value(of: done, before: .now + .seconds(30)) == nil
+                }
+            }
+            var count = 0
+            for await lost in group where lost { count += 1 }
+            return count
+        }
+        #expect(timedOut == 0)
+    }
+
+    @Test func anElapsedDeadlineStillReportsATimeout() async {
+        let slow = Task<Int, Never> { try? await Task.sleep(for: .seconds(5)); return 1 }
+        #expect(await Pipeline.value(of: slow, before: .now + .milliseconds(50)) == nil)
+        slow.cancel()
+    }
+}

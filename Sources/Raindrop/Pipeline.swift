@@ -679,13 +679,15 @@ final class Pipeline: @unchecked Sendable {
         return await withCheckedContinuation { continuation in
             gate.set(continuation)
             let timer = Task.detached {
-                try? await Task.sleep(until: deadline, clock: .continuous)
+                // A cancelled sleep throws at once: only an elapsed deadline may report a timeout,
+                // or a finished drain could lose the race and read as timed out.
+                guard (try? await Task.sleep(until: deadline, clock: .continuous)) != nil else { return }
                 gate.resume(nil)
             }
             Task.detached {
                 let value = await task.value
-                timer.cancel()
                 gate.resume(value)
+                timer.cancel()
             }
         }
     }
