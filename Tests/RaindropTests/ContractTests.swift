@@ -233,3 +233,60 @@ private func date(_ iso: String) -> Date {
         slow.cancel()
     }
 }
+
+/// Deadline rules from the cross-SDK contract (section 1.2.1).
+@Suite struct ContractDeadline {
+    @Test func aRequestCutOffAtTheDeadlineIsReportedAndNotResent() async {
+        let t = FakeTransport()
+        t.script("events/track", [.error(.timedOut)])
+        let logs = LogSink()
+        let c = makeClient(t, logs: logs) { $0.flushDeadline = .milliseconds(300) }
+        c.trackAi(AiEvent(userId: "u", event: "e", input: "x"))
+        let first = await c.flush()
+        #expect(first.undelivered == 1)
+        #expect(!first.isComplete)
+        #expect(logs.warnings.contains { $0.contains("not resent") })
+        let second = await c.flush()
+        #expect(second.isComplete)
+        #expect(t.requests("events/track").count == 1)
+    }
+
+    @Test func aPayloadWaitingOnRetryAfterStaysQueuedPastTheDeadline() async {
+        let t = FakeTransport()
+        t.script("events/track", [.status(429, headers: ["Retry-After": "1"]), .status(200)])
+        let logs = LogSink()
+        let c = makeClient(t, logs: logs) { $0.flushDeadline = .milliseconds(300) }
+        c.trackAi(AiEvent(userId: "u", event: "e", input: "x"))
+        let first = await c.flush()
+        #expect(!first.isComplete)
+        #expect(first.undelivered == 0)
+        #expect(first.pending == 1)
+        #expect(logs.warnings.contains { $0.contains("still queued") })
+        try? await Task.sleep(for: .milliseconds(1100))
+        let second = await c.flush()
+        #expect(second.delivered == 1)
+        #expect(t.requests("events/track").count == 2)
+    }
+
+    @Test func aPermanentRejectionIsNotAFlushFailure() async {
+        let t = FakeTransport()
+        t.script("events/track", [.status(400)])
+        let c = makeClient(t)
+        c.trackAi(AiEvent(userId: "u", event: "e", input: "x"))
+        let result = await c.flush()
+        #expect(result.dropped == 1)
+        #expect(result.undelivered == 0)
+        #expect(result.isComplete)
+    }
+
+    @Test func closeWarnsAboutWhatItCouldNotDeliver() async {
+        let t = FakeTransport()
+        t.script("events/track", [.status(503, headers: ["Retry-After": "5"])])
+        let logs = LogSink()
+        let c = makeClient(t, logs: logs) { $0.flushDeadline = .milliseconds(300) }
+        c.trackAi(AiEvent(userId: "u", event: "e", input: "x"))
+        let result = await c.close()
+        #expect(!result.isComplete)
+        #expect(logs.warnings.contains { $0.contains("close() deadline passed") })
+    }
+}

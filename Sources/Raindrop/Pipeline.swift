@@ -67,6 +67,9 @@ final class Pipeline: @unchecked Sendable {
         case delivered
         case dropped
         case park(after: Duration)
+        /// Still in flight when a lifecycle deadline cut it off. It may already have
+        /// reached ingest, so it is not resent (CONTRACT 1.2.1).
+        case cutOff
     }
 
     private let config: RaindropConfiguration
@@ -167,11 +170,24 @@ final class Pipeline: @unchecked Sendable {
     }
 
     func flush() async -> FlushResult {
-        await serialDrain(mode: .lifecycle, deadline: .now + config.flushDeadline)
+        warnIfIncomplete(await serialDrain(mode: .lifecycle, deadline: .now + config.flushDeadline), call: "flush()")
     }
 
     func flush(within budget: Duration) async -> FlushResult {
-        await serialDrain(mode: .lifecycle, deadline: .now + min(budget, config.flushDeadline))
+        warnIfIncomplete(await serialDrain(mode: .lifecycle, deadline: .now + min(budget, config.flushDeadline)),
+                         call: "flush()")
+    }
+
+    /// CONTRACT 1.2.1: a lifecycle call that returns with anything not delivered says so
+    /// at warn, besides in its `FlushResult`. Outside close, unsent payloads stay queued.
+    private func warnIfIncomplete(_ result: FlushResult, call: String) -> FlushResult {
+        if result.undelivered > 0 {
+            log.warn("lifecycle.undelivered", "\(call) gave up on \(result.undelivered) payload(s)")
+        }
+        if result.timedOut || result.pending > 0 {
+            log.warn("lifecycle.deadline", "\(call) returned with \(result.pending) payload(s) still queued (deadline reached or waiting on a retry); they keep sending in the background")
+        }
+        return result
     }
 
     func close() async -> FlushResult {
@@ -184,6 +200,16 @@ final class Pipeline: @unchecked Sendable {
         }
         if alreadyClosed { return FlushResult(pending: pendingCount()) }
         let result = await serialDrain(mode: .lifecycle, deadline: .now + config.flushDeadline)
+        if result.undelivered > 0 {
+            log.warn("lifecycle.undelivered", "close() gave up on \(result.undelivered) payload(s)")
+        }
+        if result.pending > 0 {
+            // Mobile apps are suspended or killed without notice: what didn't make it is
+            // saved for the next launch when offline storage is on, else it is dropped.
+            log.warn("close.leftover", storage != nil
+                ? "close() deadline passed with \(result.pending) payload(s) not delivered; saved to offline storage for the next launch"
+                : "close() deadline passed; dropping \(result.pending) payload(s) that were not delivered")
+        }
         if !result.isComplete { await checkpoint() }   // keep what didn't make it for the next run
         return result
     }
@@ -354,15 +380,20 @@ final class Pipeline: @unchecked Sendable {
                     var b = batch
                     let outcome = await deliver(&b, mode: mode, deadline: deadline)
                     if case .park(let after) = outcome {
-                        parkPartial(eventId, version: version, batch: b, after: after, dropped: &result.dropped)
+                        parkPartial(eventId, version: version, batch: b, after: after, dropped: &result.undelivered)
                         if mode == .lifecycle, let deadline, ContinuousClock.now >= deadline { result.timedOut = true }
                         continue routes
                     }
                     completePartial(eventId, version: version)
-                    if case .delivered = outcome {
+                    switch outcome {
+                    case .delivered:
                         result.delivered += 1
                         lock.withLock { notBefore[route] = nil }
-                    } else {
+                    case .cutOff:
+                        result.undelivered += 1
+                        result.timedOut = true
+                        continue routes
+                    default:
                         result.dropped += 1
                     }
                     continue
@@ -374,8 +405,12 @@ final class Pipeline: @unchecked Sendable {
                     lock.withLock { notBefore[route] = nil }
                 case .dropped:
                     result.dropped += batch.count
+                case .cutOff:
+                    result.undelivered += batch.count
+                    result.timedOut = true
+                    continue routes
                 case .park(let after):
-                    park(batch, after: after, dropped: &result.dropped)
+                    park(batch, after: after, dropped: &result.undelivered)
                     if mode == .lifecycle, let deadline, ContinuousClock.now >= deadline { result.timedOut = true }
                     continue routes
                 }
@@ -555,10 +590,14 @@ final class Pipeline: @unchecked Sendable {
         var reconnects = 0
         while true {
             var timeout = config.requestTimeout
+            var clampedToDeadline = false
             if let deadline {
                 let remaining = deadline - .now
                 if remaining <= .zero { return .park(after: .zero) }
-                timeout = min(timeout, remaining)
+                if remaining < timeout {
+                    timeout = remaining
+                    clampedToDeadline = true
+                }
             }
             attempts += 1
             do {
@@ -589,6 +628,10 @@ final class Pipeline: @unchecked Sendable {
                 reconnects += 1
                 attempts -= 1
             } catch TransportError.timedOut {
+                if clampedToDeadline {
+                    log.warn("cutoff.\(batch.route.rawValue)", "dropping \(batch.count) \(batch.route.rawValue) payload(s): still in flight at the deadline; not resent, since it may already have reached ingest")
+                    return .cutOff
+                }
                 log.warn("timeout.\(batch.route.rawValue)", "request to \(batch.route.rawValue) timed out; will retry later")
                 return .park(after: .zero)
             } catch {

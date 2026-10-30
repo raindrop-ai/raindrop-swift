@@ -16,6 +16,12 @@
   resumed interaction without a `userId` are sent with a warning. Finishing with no input or
   output still sends the event; the warning no longer says it is dropped, and a resumed
   interaction doesn't warn.
+- Flush deadline: a request still in flight when the `flush()` / `close()` deadline passes is
+  dropped instead of resent, since it may already have reached the server. Payloads not yet
+  sent, or waiting on a retry, stay queued. `FlushResult.undelivered` counts payloads given up
+  on, and `isComplete` is false when any were. `flush()` and `close()` log a warning when they
+  return with anything not delivered; `close()` says whether leftovers were saved to offline
+  storage or dropped.
 
 ## 0.0.7 (beta)
 

@@ -100,7 +100,7 @@ How delivery works:
 |---|---|
 | Hot path | `trackAi`, `trackEvent`, `identify`, `trackSignal` append to an in-memory queue under a lock and return. No network, sleeps or serialization on your thread. |
 | Delivery | A background loop sends about once a second. `events/track` batches are one JSON array per request (≤ 100 items / ~900 KB). |
-| `flush` / `close` | Durable on return, bounded by `flushDeadline` (10 s). |
+| `flush` / `close` | Durable on return, bounded by `flushDeadline` (10 s). The returned `FlushResult` says what was delivered, rejected, given up on or left queued; a request still in flight at the deadline is dropped rather than resent. |
 | Retries | 408, 429 and 5xx: honour `Retry-After` (capped at 30 s) or back off 0.5 s → 8 s with jitter, up to 4 attempts per cycle, then park and retry later. Other 4xx: dropped with a warning, never retried. Any 2xx counts as delivered; items it lists as `rejected` or `warnings` are logged as warnings. |
 | Identical retries | Each batch is serialized once and resent byte-for-byte, keeping event ids stable. |
 | Timeouts | 2 s idle timeout per request. A timed-out batch is retried on a later cycle, not inside the same `flush`. |

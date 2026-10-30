@@ -30,6 +30,7 @@ let capabilities = [
     "subagents.detached_child",
     "privacy.redact_pii",
     "logs.capture",
+    "lifecycle.flush_timeout",
 ]
 
 // Plain string arrays: the suite's coverage tooling reads these from source.
@@ -211,6 +212,17 @@ final class Clients: @unchecked Sendable {
             guard raw == .bool(true) else { fail("init.redact_pii must be true") }
             config.redactPii = true
         }
+        switch a.raw["flush_timeout_ms"] {
+        case .int(let ms)?:
+            // CONTRACT 1.2.1: one deadline for flush() and close().
+            config.flushDeadline = .milliseconds(ms)
+        case .double(let ms)?:
+            config.flushDeadline = .milliseconds(Int64(ms))
+        case nil:
+            break
+        default:
+            fail("init.flush_timeout_ms must be a number")
+        }
         config.logHandler = harnessLog
         byHandle[handle] = RaindropClient(configuration: config)
     }
@@ -249,7 +261,7 @@ let signalArgs: Set<String> = ["event_id", "name", "signal_type", "timestamp", "
 func run(_ name: String, _ raw: [String: JSONValue], _ clients: Clients) async {
     switch name {
     case "init":
-        clients.initialize(Args(step: name, raw: raw, allowed: ["project", "app_git", "redact_pii"]))
+        clients.initialize(Args(step: name, raw: raw, allowed: ["project", "app_git", "redact_pii", "flush_timeout_ms"]))
 
     case "track_ai":
         let a = Args(step: name, raw: raw, allowed: trackAiArgs)
