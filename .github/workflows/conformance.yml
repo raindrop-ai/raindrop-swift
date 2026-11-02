@@ -30,7 +30,7 @@ concurrency:
 
 env:
   HARNESS_REPO: ${{ secrets.HARNESS_REPO }}
-  HARNESS_REF: f733b3b9841432a592a72b284ed7bbe5fbf360ec
+  HARNESS_REF: 5a9e5341b169f8fd85f436169f206916c6fd8e52
   SERVER_URL: http://127.0.0.1:8787
   DRIVER_BIN: ${{ github.workspace }}/conformance/.build/release/raindrop-conformance
 
