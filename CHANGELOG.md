@@ -16,6 +16,10 @@
   resumed interaction without a `userId` are sent with a warning. Finishing with no input or
   output still sends the event; the warning no longer says it is dropped, and a resumed
   interaction doesn't warn.
+- A repeated `finish()` is no longer ignored: it sends the event's current fields again as a
+  final update, including output and properties set after the first finish, and logs a
+  warning (use one event id per interaction). Updates made after `finish()` are kept for it
+  instead of being dropped. Spans are not sent again.
 - Flush deadline: a request still in flight when the `flush()` / `close()` deadline passes is
   dropped instead of resent, since it may already have reached the server. Payloads not yet
   sent, or waiting on a retry, stay queued. `FlushResult.undelivered` counts payloads given up

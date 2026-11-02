@@ -107,17 +107,36 @@ private func partials(_ t: FakeTransport) -> [[String: Any]] {
         #expect(await c.flush().pending == 0)
     }
 
-    @Test func updatesAfterFinishAreIgnored() async {
+    @Test func aRepeatedFinishIsSentAsAnUpdateWithOneWarning() async {
         let t = FakeTransport()
         let logs = LogSink()
         let c = makeClient(t, logs: logs)
         let ix = c.begin(BeginOptions(userId: "u", event: "e", input: "x"))
+        let span = ix.startSpan("step")
+        span.end()
         await ix.finish(output: "y")
-        ix.setProperty("late", true)
-        #expect(await ix.finish(output: "z") == FlushResult())
+        ix.setProperty("late", true)   // kept for the next finish, not dropped
+        let second = await ix.finish(output: "z", properties: ["more": 1])
+        #expect(second.isComplete)
+        await ix.finish()
         await c.flush()
-        #expect(partials(t).count == 1)
-        #expect(logs.warnings.contains { $0.contains("is finished") })
+        let sent = partials(t)
+        #expect(sent.count == 3)
+        #expect(sent.allSatisfy { $0["is_pending"] as? Bool == false && $0["event_id"] as? String == ix.eventId })
+        let ai = sent[1]["ai_data"] as? [String: Any]
+        #expect(ai?["output"] as? String == "z" && ai?["input"] as? String == "x")
+        let props = sent[1]["properties"] as? [String: Any]
+        #expect(props?["late"] as? Bool == true && props?["more"] as? Int == 1)
+        #expect(Set(sent.map { $0["timestamp"] as? String }).count == 1)   // start time unchanged
+        #expect(logs.warnings.filter { $0.contains("already finished in this process") }.count == 1)
+        #expect(!logs.warnings.contains { $0.contains("no input or output") })
+        // Spans are not re-sent by a repeated finish.
+        let spanNames = t.requests("traces").flatMap { req -> [String] in
+            let rs = (req.json as? [String: Any])?["resourceSpans"] as? [[String: Any]] ?? []
+            return rs.flatMap { ($0["scopeSpans"] as? [[String: Any]] ?? []).flatMap { $0["spans"] as? [[String: Any]] ?? [] } }
+                .compactMap { $0["name"] as? String }
+        }
+        #expect(spanNames.filter { $0 == "step" }.count == 1)
     }
 
     @Test func finishedRetryResendsIdenticalBytes() async {

@@ -141,8 +141,7 @@ public final class Interaction: @unchecked Sendable {
     // MARK: Updates (hot path: queue only)
 
     public func update(_ u: InteractionUpdate) {
-        let ok: Bool = lock.withLock {
-            guard !finished else { return false }
+        let open: Bool = lock.withLock {
             if let v = u.userId { userId = v }
             if let v = u.event { event = v }
             if let v = u.input { input = v }
@@ -152,10 +151,12 @@ public final class Interaction: @unchecked Sendable {
             if let v = u.timestamp { timestamp = v }
             properties.merge(u.properties) { _, new in new }
             attachments.append(contentsOf: u.attachments)
-            return true
+            return !finished
         }
-        guard ok else {
-            log.warn("finished.\(eventId)", "interaction \(eventId) is finished; ignoring update")
+        guard open else {
+            // Kept, not dropped: a later finish() sends it as an update of the finished event.
+            log.warn("finished.\(eventId)", "interaction \(eventId) is already finished; the update "
+                + "is kept and sent only if finish() is called again. Use one event id per interaction.")
             return
         }
         publish(final: false)
@@ -169,28 +170,33 @@ public final class Interaction: @unchecked Sendable {
     // MARK: Finish (bounded, durable on return)
 
     /// Records the final output and sends the completed event. Returns once delivered or
-    /// at `flushDeadline`. Calling it twice is a no-op.
+    /// at `flushDeadline`. Calling it again sends the event's current fields once more as an
+    /// update (Raindrop finalizes an event once and treats a later finish as an update),
+    /// including output or properties set since, and logs a warning: use one event id per
+    /// interaction.
     @discardableResult
     public func finish(output: String? = nil, model: String? = nil, properties: [String: JSONValue] = [:],
                        attachments: [Attachment] = [], timestamp: Date? = nil) async -> FlushResult {
-        let ok: Bool = lock.withLock {
-            guard !finished else { return false }
+        let first: Bool = lock.withLock {
             if let output { self.output = output }
             if let model { self.model = model }
             if let timestamp { self.timestamp = timestamp }
             self.properties.merge(properties) { _, new in new }
             self.attachments.append(contentsOf: attachments)
-            finished = true
-            return true
+            defer { finished = true }
+            return !finished
         }
-        guard ok else { return FlushResult() }
-        publish(final: true)
-        onFinish(eventId)
+        if !first {
+            log.warn("finished-again.\(eventId)", "interaction \(eventId) was already finished in this process; "
+                + "sending the update anyway (Raindrop finalizes an event once). Use one event id per interaction.")
+        }
+        publish(final: true, repeated: !first)
+        if first { onFinish(eventId) }
         return await pipeline?.flush() ?? FlushResult()
     }
 
     /// Queues the accumulated state. Pending updates wait until there is input or output.
-    private func publish(final: Bool) {
+    private func publish(final: Bool, repeated: Bool = false) {
         guard let pipeline else { return }
         let (hasUser, wasResumed) = lock.withLock { (!(userId ?? "").isEmpty, resumed) }
         let (snapshot, hasContent): (JSONValue, Bool) = lock.withLock {
@@ -229,7 +235,7 @@ public final class Interaction: @unchecked Sendable {
             log.warn("resumed-no-user", "sending an update for resumed interaction \(eventId) without a userId; "
                 + "Raindrop uses the user it already has for this event")
         }
-        if !hasContent {
+        if !hasContent && !repeated {
             // Still sent: whether an empty event is kept is Raindrop's call. A resumed event is
             // exempt because another process may have sent its content.
             if !wasResumed {
