@@ -58,7 +58,8 @@ struct Batch: Sendable {
 /// - `flush` / `close` drains are bounded by a deadline. They may wait out a
 ///   capped `Retry-After` or backoff inside that deadline; background drains never wait.
 ///   They park the batch and set a not-before time for the route instead.
-/// - 2xx = delivered regardless of body; non-429 4xx = dropped, never retried.
+/// - 2xx = delivered regardless of body (`rejected` / `warnings` in it are logged); 408, 429
+///   and 5xx are retried; any other 4xx is dropped, never retried.
 final class Pipeline: @unchecked Sendable {
     enum Mode { case background, lifecycle }
 
@@ -66,6 +67,9 @@ final class Pipeline: @unchecked Sendable {
         case delivered
         case dropped
         case park(after: Duration)
+        /// Still in flight when a lifecycle deadline cut it off. It may already have
+        /// reached ingest, so it is not resent (CONTRACT 1.2.1).
+        case cutOff
     }
 
     private let config: RaindropConfiguration
@@ -166,11 +170,24 @@ final class Pipeline: @unchecked Sendable {
     }
 
     func flush() async -> FlushResult {
-        await serialDrain(mode: .lifecycle, deadline: .now + config.flushDeadline)
+        warnIfIncomplete(await serialDrain(mode: .lifecycle, deadline: .now + config.flushDeadline), call: "flush()")
     }
 
     func flush(within budget: Duration) async -> FlushResult {
-        await serialDrain(mode: .lifecycle, deadline: .now + min(budget, config.flushDeadline))
+        warnIfIncomplete(await serialDrain(mode: .lifecycle, deadline: .now + min(budget, config.flushDeadline)),
+                         call: "flush()")
+    }
+
+    /// CONTRACT 1.2.1: a lifecycle call that returns with anything not delivered says so
+    /// at warn, besides in its `FlushResult`. Outside close, unsent payloads stay queued.
+    private func warnIfIncomplete(_ result: FlushResult, call: String) -> FlushResult {
+        if result.undelivered > 0 {
+            log.warn("lifecycle.undelivered", "\(call) gave up on \(result.undelivered) payload(s)")
+        }
+        if result.timedOut || result.pending > 0 {
+            log.warn("lifecycle.deadline", "\(call) returned with \(result.pending) payload(s) still queued (deadline reached or waiting on a retry); they keep sending in the background")
+        }
+        return result
     }
 
     func close() async -> FlushResult {
@@ -183,6 +200,16 @@ final class Pipeline: @unchecked Sendable {
         }
         if alreadyClosed { return FlushResult(pending: pendingCount()) }
         let result = await serialDrain(mode: .lifecycle, deadline: .now + config.flushDeadline)
+        if result.undelivered > 0 {
+            log.warn("lifecycle.undelivered", "close() gave up on \(result.undelivered) payload(s)")
+        }
+        if result.pending > 0 {
+            // Mobile apps are suspended or killed without notice: what didn't make it is
+            // saved for the next launch when offline storage is on, else it is dropped.
+            log.warn("close.leftover", storage != nil
+                ? "close() deadline passed with \(result.pending) payload(s) not delivered; saved to offline storage for the next launch"
+                : "close() deadline passed; dropping \(result.pending) payload(s) that were not delivered")
+        }
         if !result.isComplete { await checkpoint() }   // keep what didn't make it for the next run
         return result
     }
@@ -353,15 +380,20 @@ final class Pipeline: @unchecked Sendable {
                     var b = batch
                     let outcome = await deliver(&b, mode: mode, deadline: deadline)
                     if case .park(let after) = outcome {
-                        parkPartial(eventId, version: version, batch: b, after: after, dropped: &result.dropped)
+                        parkPartial(eventId, version: version, batch: b, after: after, dropped: &result.undelivered)
                         if mode == .lifecycle, let deadline, ContinuousClock.now >= deadline { result.timedOut = true }
                         continue routes
                     }
                     completePartial(eventId, version: version)
-                    if case .delivered = outcome {
+                    switch outcome {
+                    case .delivered:
                         result.delivered += 1
                         lock.withLock { notBefore[route] = nil }
-                    } else {
+                    case .cutOff:
+                        result.undelivered += 1
+                        result.timedOut = true
+                        continue routes
+                    default:
                         result.dropped += 1
                     }
                     continue
@@ -373,8 +405,12 @@ final class Pipeline: @unchecked Sendable {
                     lock.withLock { notBefore[route] = nil }
                 case .dropped:
                     result.dropped += batch.count
+                case .cutOff:
+                    result.undelivered += batch.count
+                    result.timedOut = true
+                    continue routes
                 case .park(let after):
-                    park(batch, after: after, dropped: &result.dropped)
+                    park(batch, after: after, dropped: &result.undelivered)
                     if mode == .lifecycle, let deadline, ContinuousClock.now >= deadline { result.timedOut = true }
                     continue routes
                 }
@@ -554,10 +590,14 @@ final class Pipeline: @unchecked Sendable {
         var reconnects = 0
         while true {
             var timeout = config.requestTimeout
+            var clampedToDeadline = false
             if let deadline {
                 let remaining = deadline - .now
                 if remaining <= .zero { return .park(after: .zero) }
-                timeout = min(timeout, remaining)
+                if remaining < timeout {
+                    timeout = remaining
+                    clampedToDeadline = true
+                }
             }
             attempts += 1
             do {
@@ -565,8 +605,9 @@ final class Pipeline: @unchecked Sendable {
                 switch response.status {
                 case 200..<300:
                     log.debug("delivered \(batch.count) \(batch.route.rawValue) payload(s)")
+                    reportIngestResponse(response.body, route: batch.route)
                     return .delivered
-                case 429, 500...599:
+                case 408, 429, 500...599:
                     let delay = retryDelay(response, attempt: attempts)
                     log.debug("HTTP \(response.status) on \(batch.route.rawValue); retry in \(delay)")
                     guard mode == .lifecycle, attempts < config.maxAttempts, let deadline,
@@ -587,6 +628,10 @@ final class Pipeline: @unchecked Sendable {
                 reconnects += 1
                 attempts -= 1
             } catch TransportError.timedOut {
+                if clampedToDeadline {
+                    log.warn("cutoff.\(batch.route.rawValue)", "dropping \(batch.count) \(batch.route.rawValue) payload(s): still in flight at the deadline; not resent, since it may already have reached ingest")
+                    return .cutOff
+                }
                 log.warn("timeout.\(batch.route.rawValue)", "request to \(batch.route.rawValue) timed out; will retry later")
                 return .park(after: .zero)
             } catch {
@@ -594,6 +639,53 @@ final class Pipeline: @unchecked Sendable {
                 return .park(after: backoff(attempt: attempts))
             }
         }
+    }
+
+    /// A 2xx is delivered whatever its body says. Ingest lists items it did not store under
+    /// `rejected` and input it accepted with changes (such as ignored fields) under `warnings`;
+    /// both are warnings. An empty, non-JSON or unexpected body is ignored.
+    private func reportIngestResponse(_ body: Data, route: Route) {
+        guard !body.isEmpty, let object = try? JSONDecoder().decode(JSONValue.self, from: body).objectValue else { return }
+        if case .array(let rejected)? = object["rejected"], !rejected.isEmpty {
+            let quoted = rejected.prefix(3).map { item -> String in
+                let o = item.objectValue ?? [:]
+                let issues: [String]
+                if case .array(let list)? = o["issues"] {
+                    issues = list.compactMap { issue in
+                        guard let i = issue.objectValue else { return nil }
+                        let message = i["message"]?.stringValue ?? "invalid"
+                        if let path = i["path"]?.stringValue, !path.isEmpty { return "\(path): \(message)" }
+                        return message
+                    }
+                } else {
+                    issues = []
+                }
+                return "\(Self.itemLabel(o)) (\(issues.isEmpty ? "invalid" : issues.joined(separator: "; ")))"
+            }
+            let more = rejected.count > 3 ? " (+\(rejected.count - 3) more)" : ""
+            log.warn("ingest.rejected.\(route.rawValue)",
+                     "\(route.rawValue): ingest rejected \(rejected.count) item(s), which were not stored: "
+                        + quoted.joined(separator: " | ") + more)
+        }
+        if case .array(let warnings)? = object["warnings"], !warnings.isEmpty {
+            let quoted = warnings.prefix(3).map { item -> String in
+                let o = item.objectValue ?? [:]
+                if let message = o["message"]?.stringValue, !message.isEmpty { return "\(Self.itemLabel(o)): \(message)" }
+                var fields: [String] = []
+                if case .array(let list)? = o["fields"] { fields = list.compactMap(\.stringValue) }
+                return "\(Self.itemLabel(o)): ignored \(fields.isEmpty ? "input" : fields.joined(separator: ", "))"
+            }
+            let more = warnings.count > 3 ? " (+\(warnings.count - 3) more)" : ""
+            log.warn("ingest.warnings.\(route.rawValue)",
+                     "\(route.rawValue): ingest accepted \(warnings.count) item(s) with changes: "
+                        + quoted.joined(separator: " | ") + more)
+        }
+    }
+
+    private static func itemLabel(_ item: [String: JSONValue]) -> String {
+        if let id = item["event_id"]?.stringValue, !id.isEmpty { return "event \(id)" }
+        if case .int(let i)? = item["index"] { return "item \(i)" }
+        return "item"
     }
 
     private func retryDelay(_ response: HTTPResponse, attempt: Int) -> Duration {
@@ -630,13 +722,15 @@ final class Pipeline: @unchecked Sendable {
         return await withCheckedContinuation { continuation in
             gate.set(continuation)
             let timer = Task.detached {
-                try? await Task.sleep(until: deadline, clock: .continuous)
+                // A cancelled sleep throws at once: only an elapsed deadline may report a timeout,
+                // or a finished drain could lose the race and read as timed out.
+                guard (try? await Task.sleep(until: deadline, clock: .continuous)) != nil else { return }
                 gate.resume(nil)
             }
             Task.detached {
                 let value = await task.value
-                timer.cancel()
                 gate.resume(value)
+                timer.cancel()
             }
         }
     }

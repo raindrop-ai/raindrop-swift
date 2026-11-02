@@ -66,8 +66,8 @@ public struct InteractionUpdate: Sendable {
 /// by event id even if an earlier send was lost. Updates only queue (hot path); `finish`
 /// sends and returns within `flushDeadline`.
 ///
-/// Raindrop drops partial events with neither input nor output, so the SDK holds updates
-/// until the interaction has one of them.
+/// Pending updates wait until the interaction has input or output; `finish` sends either way.
+/// An interaction without a `userId` is not sent until an update sets one (a resumed one is).
 ///
 /// To finish in another process, keep `eventId` (and the begin time) and call
 /// `RaindropClient.resumeInteraction(eventId:beganAt:)` there.
@@ -93,6 +93,8 @@ public final class Interaction: @unchecked Sendable {
     private var attachments: [Attachment] = []
     private var featureFlags: [String: String] = [:]
     private var finished = false
+    /// Continued by id (`resumeInteraction`): its user, start and content may live in another process.
+    private var resumed = false
     /// Reverse link stamped on every span when this interaction is a detached subagent.
     private var subagentLink: [String: JSONValue] = [:]
     /// Set once this turn dispatches a subagent (see `subagent(name:)`).
@@ -130,7 +132,10 @@ public final class Interaction: @unchecked Sendable {
     }
 
     func seedResumed(beganAt: Date?) {
-        lock.withLock { timestamp = beganAt }
+        lock.withLock {
+            timestamp = beganAt
+            resumed = true
+        }
     }
 
     // MARK: Updates (hot path: queue only)
@@ -187,6 +192,7 @@ public final class Interaction: @unchecked Sendable {
     /// Queues the accumulated state. Pending updates wait until there is input or output.
     private func publish(final: Bool) {
         guard let pipeline else { return }
+        let (hasUser, wasResumed) = lock.withLock { (!(userId ?? "").isEmpty, resumed) }
         let (snapshot, hasContent): (JSONValue, Bool) = lock.withLock {
             var props = properties
             if props["$context"] == nil { props["$context"] = context }
@@ -212,9 +218,23 @@ public final class Interaction: @unchecked Sendable {
             }
             return (.object(body), hasContent)
         }
+        if !hasContent && !final { return }   // hold until there is content
+        if !hasUser {
+            // A begun event without a user is not sent (a later update can add one). A resumed
+            // event is: Raindrop keeps the user it already has for that event id.
+            guard wasResumed else {
+                log.warn("no-user.\(eventId)", "interaction \(eventId) has no userId; not sending it until an update sets one")
+                return
+            }
+            log.warn("resumed-no-user", "sending an update for resumed interaction \(eventId) without a userId; "
+                + "Raindrop uses the user it already has for this event")
+        }
         if !hasContent {
-            guard final else { return }   // hold until there is content
-            log.warn("empty.\(eventId)", "interaction \(eventId) finished with no input or output; Raindrop will drop it")
+            // Still sent: whether an empty event is kept is Raindrop's call. A resumed event is
+            // exempt because another process may have sent its content.
+            if !wasResumed {
+                log.warn("empty.\(eventId)", "interaction \(eventId) finished with no input or output; sending it anyway")
+            }
         }
         pipeline.enqueuePartial(eventId: eventId, snapshot)
     }
@@ -262,17 +282,26 @@ public final class Interaction: @unchecked Sendable {
         return tool
     }
 
-    /// Records a tool call that already happened.
+    /// Records a tool call that already happened: a start time plus a `duration` or an
+    /// `endTime` (when both are given, `endTime` wins). Pass `parent: .ref(saved)` to place it
+    /// under a span whose ids were saved, for example by another process.
     public func trackTool(_ name: String, input: JSONValue? = nil, output: JSONValue? = nil, error: String? = nil,
-                          duration: Duration? = nil, startTime: Date? = nil, parent: SpanParent? = nil) {
-        let d = duration ?? .zero
-        let seconds = Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18
-        let start = startTime ?? Date().addingTimeInterval(-seconds)
+                          duration: Duration? = nil, startTime: Date? = nil, endTime: Date? = nil,
+                          parent: SpanParent? = nil) {
+        let given = duration ?? .zero
+        var seconds = Double(given.components.seconds) + Double(given.components.attoseconds) / 1e18
+        let start: Date
+        if let endTime {
+            start = startTime ?? endTime.addingTimeInterval(-seconds)
+            seconds = max(0, endTime.timeIntervalSince(start))
+        } else {
+            start = startTime ?? Date().addingTimeInterval(-seconds)
+        }
         let tool = ToolSpan(span: Span(name: name, parent: parent, start: start, context: context(for: "tool")), name: name)
         if let input { tool.setInput(input) }
         if let output { tool.setOutput(output) }
         if let error { tool.setError(error) }
-        tool.span.setAttribute("traceloop.entity.duration_ms", .int(d.components.seconds * 1000 + d.components.attoseconds / 1_000_000_000_000_000))
+        tool.span.setAttribute("traceloop.entity.duration_ms", .int(Int64((seconds * 1000).rounded(.down))))
         tool.span.end(at: start.addingTimeInterval(seconds))
     }
 
@@ -302,7 +331,7 @@ public final class Interaction: @unchecked Sendable {
         tool.end()
         let (u, cv) = lock.withLock { (userId, convoId) }
         return SubagentHandoff(parentEventId: eventId, parentSpanId: tool.ref.spanId, childEventId: childId,
-                               name: resolvedName, userId: u, convoId: cv)
+                               name: resolvedName, userId: u, convoId: cv, traceId: tool.ref.traceId)
     }
 
     /// Reports that this run aborted: records an errored `ai.subagent.failed` span (unless one
@@ -402,15 +431,120 @@ public struct SubagentHandoff: Sendable, Codable, Hashable {
     /// Defaults for the child's user and conversation (taken from the parent turn).
     public var userId: String?
     public var convoId: String?
+    /// The dispatch span's trace id (32 hex characters), if one was recorded.
+    public var traceId: String?
 
     public init(parentEventId: String, parentSpanId: String? = nil, childEventId: String = UUID().uuidString.lowercased(),
-                name: String = "subagent", userId: String? = nil, convoId: String? = nil) {
+                name: String = "subagent", userId: String? = nil, convoId: String? = nil, traceId: String? = nil) {
         self.parentEventId = parentEventId
         self.parentSpanId = parentSpanId
         self.childEventId = childEventId
         self.name = name
         self.userId = userId
         self.convoId = convoId
+        self.traceId = traceId
+    }
+
+    // MARK: Header carrier (shared by every Raindrop SDK)
+
+    /// The handoff as request headers, for a child in another service: `x-raindrop-handoff`
+    /// and `baggage` carry the `raindrop-*` fields (W3C baggage encoding), plus a W3C
+    /// `traceparent` when the ids are W3C-shaped. Send all of them: instrumented HTTP clients
+    /// rewrite `traceparent` and `baggage`, and `x-raindrop-handoff` survives that. Read them
+    /// back with `SubagentHandoff(headers:)`, in this SDK or any other Raindrop SDK.
+    ///
+    /// Only accept a carrier from services you trust: it names the event the child reports under.
+    public var headers: [String: String] {
+        let fields = Self.encodeBaggage([
+            (CarrierField.eventId, parentEventId),
+            (CarrierField.childEventId, childEventId),
+            (CarrierField.name, name),
+            (CarrierField.convoId, convoId),
+            (CarrierField.userId, userId),
+            (CarrierField.dispatchSpanId, parentSpanId),
+            (CarrierField.traceId, traceId),
+        ])
+        var out = [CarrierField.header: fields, "baggage": fields]
+        if let traceId, let parentSpanId, Self.isHex(traceId, count: 32), Self.isHex(parentSpanId, count: 16) {
+            out["traceparent"] = "00-\(traceId.lowercased())-\(parentSpanId.lowercased())-01"
+        }
+        return out
+    }
+
+    /// Reads a carrier produced by any Raindrop SDK (header names are case-insensitive).
+    /// `x-raindrop-handoff` wins over `baggage`, which wins over `traceparent`. Returns nil
+    /// when the headers name no parent and child event, or name one field twice with two
+    /// different values; the child should then run as an unlinked event.
+    public init?(headers: [String: String]) {
+        var lower: [String: String] = [:]
+        for (key, value) in headers { lower[key.lowercased()] = value }
+        guard let fromBaggage = Self.decodeBaggage(lower["baggage"]),
+              let fromHeader = Self.decodeBaggage(lower[CarrierField.header]) else { return nil }
+        var fields = fromBaggage
+        fields.merge(fromHeader) { _, header in header }
+        var traceFromParent: String?
+        var spanFromParent: String?
+        if let tp = lower["traceparent"] {
+            let parts = tp.split(separator: "-").map(String.init)
+            if parts.count == 4, Self.isHex(parts[1], count: 32), Self.isHex(parts[2], count: 16) {
+                traceFromParent = parts[1].lowercased()
+                spanFromParent = parts[2].lowercased()
+            }
+        }
+        guard let parent = fields[CarrierField.eventId], !parent.isEmpty,
+              let child = fields[CarrierField.childEventId], !child.isEmpty else { return nil }
+        self.init(parentEventId: parent,
+                  parentSpanId: fields[CarrierField.dispatchSpanId] ?? spanFromParent,
+                  childEventId: child,
+                  name: fields[CarrierField.name] ?? "subagent",
+                  userId: fields[CarrierField.userId],
+                  convoId: fields[CarrierField.convoId],
+                  traceId: fields[CarrierField.traceId] ?? traceFromParent)
+    }
+
+    private enum CarrierField {
+        static let header = "x-raindrop-handoff"
+        static let eventId = "raindrop-event-id"
+        static let childEventId = "raindrop-child-event-id"
+        static let name = "raindrop-handoff-name"
+        static let convoId = "raindrop-convo-id"
+        static let userId = "raindrop-user-id"
+        static let traceId = "raindrop-trace-id"
+        static let dispatchSpanId = "raindrop-dispatch-span-id"
+    }
+
+    /// Characters left unescaped: what JavaScript's `encodeURIComponent` leaves alone, so
+    /// every SDK writes the same bytes.
+    private static let unreserved = CharacterSet(charactersIn:
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()")
+
+    private static func encodeBaggage(_ entries: [(String, String?)]) -> String {
+        entries.compactMap { key, value in
+            guard let value, !value.isEmpty else { return nil }
+            return "\(key)=\(value.addingPercentEncoding(withAllowedCharacters: unreserved) ?? value)"
+        }.joined(separator: ",")
+    }
+
+    /// Fields of one baggage-encoded header; nil when a key appears twice with two values.
+    private static func decodeBaggage(_ header: String?) -> [String: String]? {
+        guard let header, !header.isEmpty else { return [:] }
+        var out: [String: String] = [:]
+        for part in header.split(separator: ",") {
+            guard let eq = part.firstIndex(of: "=") else { continue }
+            let key = part[..<eq].trimmingCharacters(in: .whitespaces)
+            // Baggage entry properties follow `;`; carrier fields never use them.
+            let raw = part[part.index(after: eq)...].split(separator: ";", maxSplits: 1).first.map(String.init) ?? ""
+            let trimmed = raw.trimmingCharacters(in: .whitespaces)
+            let value = trimmed.removingPercentEncoding ?? trimmed
+            guard !key.isEmpty else { continue }
+            if let existing = out[key], existing != value { return nil }
+            out[key] = value
+        }
+        return out
+    }
+
+    private static func isHex(_ s: String, count: Int) -> Bool {
+        s.count == count && s.allSatisfy(\.isHexDigit)
     }
 
     /// Reverse reference stamped on every span of the child.

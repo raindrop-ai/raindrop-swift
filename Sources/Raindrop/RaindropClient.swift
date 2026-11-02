@@ -186,6 +186,25 @@ public final class RaindropClient: Sendable {
         return interaction
     }
 
+    /// The child side of a detached subagent launched from another service: reads the handoff
+    /// carrier from the request headers (`SubagentHandoff.headers`, written by any Raindrop
+    /// SDK) and opens the child's own event. `userId` is used when the carrier names no user.
+    /// With no readable carrier the child still runs and reports, as an unlinked event.
+    public func beginSubagent(headers: [String: String], userId: String? = nil, event: String? = nil,
+                              input: String? = nil, model: String? = nil, convoId: String? = nil,
+                              properties: [String: JSONValue] = [:]) -> Interaction {
+        guard var handoff = SubagentHandoff(headers: headers) else {
+            if pipeline != nil {
+                log.warn("handoff-carrier", "no readable subagent carrier in the headers; reporting as an unlinked event")
+            }
+            return begin(BeginOptions(userId: userId ?? "", event: event ?? "subagent", input: input, model: model,
+                                      convoId: convoId, properties: properties))
+        }
+        if handoff.userId == nil || handoff.userId?.isEmpty == true { handoff.userId = userId }
+        return beginSubagent(handoff, userId: handoff.userId, event: event, input: input, model: model,
+                             convoId: convoId, properties: properties)
+    }
+
     private func makeInteraction(_ eventId: String) -> Interaction {
         let registry = self.registry
         return Interaction(eventId: eventId, pipeline: pipeline, log: log, context: context, appGit: appGit,

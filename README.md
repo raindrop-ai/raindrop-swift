@@ -2,7 +2,7 @@
 
 Raindrop SDK for Swift (iOS 16+, macOS 13+, tvOS, watchOS, visionOS and Linux).
 
-> **Status: beta (`0.0.7`), ready for production use.** Events, AI events, interactions
+> **Status: beta (`0.0.8`), ready for production use.** Events, AI events, interactions
 > (begin/finish/resume), signals, identify, manual tracing, offline storage and app
 > lifecycle handling are all supported. The API may still change before `0.1.0`, so pin a
 > version. Full docs:
@@ -12,7 +12,7 @@ Raindrop SDK for Swift (iOS 16+, macOS 13+, tvOS, watchOS, visionOS and Linux).
 
 ```swift
 // Package.swift
-.package(url: "https://github.com/raindrop-ai/raindrop-swift.git", from: "0.0.7")
+.package(url: "https://github.com/raindrop-ai/raindrop-swift.git", from: "0.0.8")
 // target dependency:
 .product(name: "Raindrop", package: "raindrop-swift")
 ```
@@ -78,6 +78,9 @@ Task.detached {
         await run.fail(error)
     }
 }
+// In another service: send `handoff.headers` with the request, and open the child there
+// from the request's headers (the carrier every Raindrop SDK writes and reads).
+let child = raindrop.beginSubagent(headers: requestHeaders, input: "research")
 
 raindrop.identify(userId: "user-123", traits: ["plan": "paid"])
 raindrop.trackEvent(Event(userId: "user-123", event: "session_started"))
@@ -97,14 +100,14 @@ How delivery works:
 |---|---|
 | Hot path | `trackAi`, `trackEvent`, `identify`, `trackSignal` append to an in-memory queue under a lock and return. No network, sleeps or serialization on your thread. |
 | Delivery | A background loop sends about once a second. `events/track` batches are one JSON array per request (≤ 100 items / ~900 KB). |
-| `flush` / `close` | Durable on return, bounded by `flushDeadline` (10 s). |
-| Retries | 429 and 5xx: honour `Retry-After` (capped at 30 s) or back off 0.5 s → 8 s with jitter, up to 4 attempts per cycle, then park and retry later. Other 4xx: dropped with a warning, never retried. Any 2xx counts as delivered. |
+| `flush` / `close` | Durable on return, bounded by `flushDeadline` (10 s). The returned `FlushResult` says what was delivered, rejected, given up on or left queued; a request still in flight at the deadline is dropped rather than resent. |
+| Retries | 408, 429 and 5xx: honour `Retry-After` (capped at 30 s) or back off 0.5 s → 8 s with jitter, up to 4 attempts per cycle, then park and retry later. Other 4xx: dropped with a warning, never retried. Any 2xx counts as delivered; items it lists as `rejected` or `warnings` are logged as warnings. |
 | Identical retries | Each batch is serialized once and resent byte-for-byte, keeping event ids stable. |
 | Timeouts | 2 s idle timeout per request. A timed-out batch is retried on a later cycle, not inside the same `flush`. |
 | Limits | `input` / `output` truncated at 1,000,000 codepoints with `...[truncated by raindrop]`. No caps on properties or attachments. Unicode preserved byte-for-byte. |
 | Bounded memory | 10,000 queued payloads per route and 100 parked batches; the oldest are dropped with a warning. |
 | Never crashes the host | Nothing throws into your code. Invalid input and delivery failures are logged (rate-limited) and dropped. |
-| Interactions | `begin` / updates queue; each send carries the full accumulated state to `events/track_partial` (latest wins per event id). Updates wait until there's input or output (Raindrop drops partials without either). The begin time is kept. `finish` is durable on return. `resumeInteraction(eventId:beganAt:)` needs only the id. |
+| Interactions | `begin` / updates queue; each send carries the full accumulated state to `events/track_partial` (latest wins per event id). Updates wait until there's input or output; an interaction finished with neither is still sent, with a warning. An interaction without a `userId` isn't sent until an update sets one. The begin time is kept. `finish` is durable on return. `resumeInteraction(eventId:beganAt:)` needs only the id; its updates are sent without a `userId` (with a warning) and Raindrop keeps the user it has. |
 | Tracing | `Span` / `LlmSpan` / `ToolSpan` exported as OTLP JSON batches to `/v1/traces`, linked to the event, user and conversation. Raw `gen_ai.usage.*` only (cost is computed server-side). |
 | Apps | Offline storage in Application Support (5 MB / 7 days, excluded from backup, data protection set by `storageProtection`); flush on background under an expiring-activity assertion; retry when the network returns; `PrivacyInfo.xcprivacy` included. |
 
@@ -127,7 +130,6 @@ manifest. See its README; CI runs it on every change.
 
 ## Not yet supported
 
-- Header-based context propagation for detached subagents (pass the handoff explicitly).
 - Contextual Git detection on Vercel (set `appGit` or the environment variables instead).
 
 ## Development

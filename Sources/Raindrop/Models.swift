@@ -171,15 +171,21 @@ public struct FlushResult: Sendable, Equatable {
     public var pending: Int = 0
     /// The call's deadline expired before everything was attempted.
     public var timedOut: Bool = false
+    /// Payloads given up on: cut off at the deadline while in flight (not resent, since
+    /// they may already have reached ingest), or abandoned after repeated failed sends.
+    /// Unlike `dropped`, these were never delivered.
+    public var undelivered: Int = 0
 
-    /// True when nothing is left to send.
-    public var isComplete: Bool { pending == 0 && !timedOut }
+    /// True when everything was handed to ingest and nothing is left to send.
+    public var isComplete: Bool { pending == 0 && !timedOut && undelivered == 0 }
 
-    public init(delivered: Int = 0, dropped: Int = 0, pending: Int = 0, timedOut: Bool = false) {
+    public init(delivered: Int = 0, dropped: Int = 0, pending: Int = 0, timedOut: Bool = false,
+                undelivered: Int = 0) {
         self.delivered = delivered
         self.dropped = dropped
         self.pending = pending
         self.timedOut = timedOut
+        self.undelivered = undelivered
     }
 }
 
