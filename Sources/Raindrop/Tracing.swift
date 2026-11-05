@@ -234,7 +234,13 @@ public final class Span: @unchecked Sendable {
     }
 
     static func nanos(_ d: Date) -> String {
-        String(UInt64(max(0, d.timeIntervalSince1970) * 1_000_000_000))
+        // A Date resolves about 0.24 µs at today's epoch, and multiplying it out as one Double
+        // adds more error, so a millisecond time would not round-trip. Whole seconds plus the
+        // fraction rounded to the microsecond keep every millisecond and microsecond time exact.
+        let t = max(0, d.timeIntervalSince1970)
+        let whole = t.rounded(.down)
+        let micros = UInt64(((t - whole) * 1_000_000).rounded())
+        return String(UInt64(whole) * 1_000_000_000 + micros * 1_000)
     }
 
     static func randomHex(bytes: Int) -> String {
