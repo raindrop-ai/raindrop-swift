@@ -82,11 +82,13 @@ final class RaindropAppUITests: XCTestCase {
     func testBackgroundingFlushesQueuedEvents() {
         launch(flushInterval: 3600)
         tap("trackAi")
-        waitStatus("queued")
+        waitStatus("queued", timeout: 60)
         Thread.sleep(forTimeInterval: 1)
         XCTAssertTrue(delivered(CaptureServer.requests(), "events/track").isEmpty, "sent before backgrounding")
         XCUIDevice.shared.press(.home)
-        waitRequests(timeout: 15, "events/track after backgrounding") { !self.delivered($0, "events/track").isEmpty }
+        // The background flush runs in the app's background-task window; a loaded CI
+        // simulator can take a while to schedule it.
+        waitRequests(timeout: 30, "events/track after backgrounding") { !self.delivered($0, "events/track").isEmpty }
         app.activate()
     }
 

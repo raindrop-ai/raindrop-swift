@@ -64,6 +64,12 @@ jobs:
           ')
           echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
           xcrun simctl list devices available | grep "$UDID"
+      - name: Boot the simulator
+        # Boot before the tests and wait until it's fully up, so the first UI test doesn't
+        # absorb the cold start (the backgrounding test runs first and is timing-sensitive).
+        run: |
+          xcrun simctl boot "$SIM_UDID" || true
+          xcrun simctl bootstatus "$SIM_UDID" -b
       - name: Run UI tests on the simulator
         working-directory: examples/RaindropTestApp
         run: |
