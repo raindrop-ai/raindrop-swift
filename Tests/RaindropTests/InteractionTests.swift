@@ -428,8 +428,9 @@ private func hex(_ b64: Any?) -> String {
     }
 
     @Test func redactedSpanTextStaysWithinTheCap() {
-        var span: [String: JSONValue] = ["attributes": [["key": "ai.prompt", "value": ["stringValue": "a@b.co a@b.co a@b.co"]]]]
-        PIIRedactor.redactSpan(&span, limit: 30)
+        let address = "a\u{40}b.co"
+        let input: [String: JSONValue] = ["attributes": [["key": "ai.prompt", "value": ["stringValue": .string("\(address) \(address) \(address)")]]]]
+        let span = SpanPrivacy.process(input, redact: true, masker: nil, limit: 30) ?? [:]
         let text = span["attributes"]?.arrayValue?.first?.objectValue?["value"]?.objectValue?["stringValue"]?.stringValue ?? ""
         #expect(text.unicodeScalars.count <= 30)
         #expect(!text.contains("a@b.co"))

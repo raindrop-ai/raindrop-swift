@@ -215,7 +215,9 @@ public final class RaindropClient: Sendable {
 
     func spanContext(eventId: String?) -> SpanContext {
         SpanContext(pipeline: configuration.tracingEnabled ? pipeline : nil,
-                    maxTextChars: configuration.maxTextFieldChars, appGit: appGit, eventId: eventId)
+                    // With span content processed before export, the cap is applied there, after redaction.
+                    maxTextChars: configuration.processesSpanContent ? 0 : configuration.maxTextFieldChars,
+                    appGit: appGit, eventId: eventId)
     }
 
     /// A span not tied to an interaction. Pass `eventId` to link it to an event you sent.

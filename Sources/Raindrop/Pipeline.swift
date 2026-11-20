@@ -467,20 +467,45 @@ final class Pipeline: @unchecked Sendable {
         }
     }
 
-    /// Truncation and `beforeSend`, applied off the hot path just before serialization.
+    /// Redaction, the caller's mask, truncation and `beforeSend`, applied off the hot path just
+    /// before serialization, in that order. Redaction runs on the whole value, before the cap.
     private func prepare(_ route: Route, _ item: JSONValue) -> JSONValue? {
         guard var object = item.objectValue else { return item }
-        if route == .eventsTrack || route == .partial, var ai = object["ai_data"]?.objectValue {
-            for key in ["input", "output"] {
-                if var text = ai[key]?.stringValue {
-                    if config.redactPii { text = PIIRedactor.redact(text) }
-                    ai[key] = .string(Truncation.truncate(text, limit: config.maxTextFieldChars))
+        let masker = config.mask.map { Masker(mask: $0, log: log) }
+        switch route {
+        case .eventsTrack, .partial:
+            if config.redactPii, var ai = object["ai_data"]?.objectValue {
+                for key in ["input", "output"] {
+                    guard let text = ai[key]?.stringValue else { continue }
+                    guard let redacted = PIIJSON.redactEventText(text) else {
+                        // Never expected (the rules are constants): never send content unredacted.
+                        log.warn("redact.failed", "PII redaction is unavailable; dropping an event rather than sending it unredacted")
+                        return nil
+                    }
+                    ai[key] = .string(redacted)
                 }
+                object["ai_data"] = .object(ai)
             }
-            object["ai_data"] = .object(ai)
-        }
-        if route == .traces, config.redactPii {
-            PIIRedactor.redactSpan(&object, limit: config.maxTextFieldChars)
+            if let masker { object = masker.payload(object, kind: .event) }
+            if var ai = object["ai_data"]?.objectValue {
+                for key in ["input", "output"] {
+                    if let text = ai[key]?.stringValue { ai[key] = .string(Truncation.truncate(text, limit: config.maxTextFieldChars)) }
+                }
+                object["ai_data"] = .object(ai)
+            }
+        case .identify:
+            if let masker { object = masker.payload(object, kind: .identify) }
+        case .signals:
+            if let masker { object = masker.payload(object, kind: .signal) }
+        case .traces:
+            if config.processesSpanContent {
+                guard let processed = SpanPrivacy.process(object, redact: config.redactsSpans, masker: masker,
+                                                          limit: config.maxTextFieldChars) else {
+                    log.warn("redact.span_failed", "span PII redaction failed; dropping the span rather than sending it unredacted")
+                    return nil
+                }
+                object = processed
+            }
         }
         if let hook = config.beforeSend {
             guard let edited = hook(RaindropPayload(route: route.rawValue, body: object)) else { return nil }

@@ -29,6 +29,8 @@ let capabilities = [
     "subagents.detached_dispatch",
     "subagents.detached_child",
     "privacy.redact_pii",
+    "privacy.redact_trace_pii",
+    "privacy.mask",
     "logs.capture",
     "lifecycle.flush_timeout",
 ]
@@ -173,6 +175,28 @@ struct Args {
     }
 }
 
+// MARK: Test masks (the suite's fixed masking functions)
+
+struct TestMaskError: Error {}
+
+let testMasks: [String: RaindropMask] = [
+    // Strings become "<MASKED {kind} {field}>", objects {"masked": "{kind} {field}"}, arrays [].
+    "tag": { value, ctx in
+        switch value {
+        case .string: return .string("<MASKED \(ctx.kind.rawValue) \(ctx.field)>")
+        case .array: return []
+        default: return ["masked": .string("\(ctx.kind.rawValue) \(ctx.field)")]
+        }
+    },
+    // Always throws: the SDK must send its fail-closed stand-ins.
+    "throw": { _, _ in throw TestMaskError() },
+    // Appends a fixed suffix to strings; objects and arrays come back unchanged.
+    "suffix": { value, _ in
+        if case .string(let s) = value { return .string(s + " [masked by ops@example.com]") }
+        return value
+    },
+]
+
 // MARK: Clients
 
 final class Clients: @unchecked Sendable {
@@ -211,6 +235,14 @@ final class Clients: @unchecked Sendable {
         if let raw = a.raw["redact_pii"] {
             guard raw == .bool(true) else { fail("init.redact_pii must be true") }
             config.redactPii = true
+        }
+        if let raw = a.raw["redact_trace_pii"] {
+            guard raw == .bool(true) else { fail("init.redact_trace_pii must be true") }
+            config.redactTracePii = true
+        }
+        if let raw = a.raw["mask"] {
+            guard let name = raw.stringValue, let mask = testMasks[name] else { fail("init.mask must be tag, throw or suffix") }
+            config.mask = mask
         }
         switch a.raw["flush_timeout_ms"] {
         case .int(let ms)?:
@@ -261,7 +293,8 @@ let signalArgs: Set<String> = ["event_id", "name", "signal_type", "timestamp", "
 func run(_ name: String, _ raw: [String: JSONValue], _ clients: Clients) async {
     switch name {
     case "init":
-        clients.initialize(Args(step: name, raw: raw, allowed: ["project", "app_git", "redact_pii", "flush_timeout_ms"]))
+        clients.initialize(Args(step: name, raw: raw, allowed: ["project", "app_git", "redact_pii", "redact_trace_pii", "mask",
+                                                                "flush_timeout_ms"]))
 
     case "track_ai":
         let a = Args(step: name, raw: raw, allowed: trackAiArgs)
