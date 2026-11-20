@@ -11,7 +11,8 @@ let package = Package(
     targets: [
         // Zero third-party dependencies, by design.
         .target(name: "Raindrop", resources: [.copy("PrivacyInfo.xcprivacy")]),
-        .testTarget(name: "RaindropTests", dependencies: ["Raindrop"]),
+        // Fixtures: the conformance harness's shared PII rules and cases (rules and cases only).
+        .testTarget(name: "RaindropTests", dependencies: ["Raindrop"], resources: [.copy("Fixtures")]),
     ],
     swiftLanguageModes: [.v6]
 )
