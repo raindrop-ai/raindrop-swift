@@ -200,7 +200,7 @@ final class RaindropAppUITests: XCTestCase {
         XCTAssertTrue(finals.contains { $0["event"] as? String == "ios_agent_turn" && $0["is_pending"] as? Bool == false })
     }
 
-    /// redactPii scrubs the event and span content on the device; nothing raw leaves the app.
+    /// redactPii scrubs the event and redactTracePii the span content on the device; nothing raw leaves the app.
     func testPIIIsRedactedBeforeLeavingTheDevice() {
         launch()
         tap("trackPII")

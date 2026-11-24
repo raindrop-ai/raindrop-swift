@@ -1,0 +1,375 @@
+{
+  "format": 1,
+  "rules": [
+    {
+      "name": "credit_card",
+      "case_insensitive": false,
+      "replace_with": "<REDACTED CREDIT CARD NUMBER>",
+      "pattern": "\\d{4}[ -]?\\d{4}[ -]?\\d{4}[ -]?\\d{4}|\\d{4}[ -]?\\d{6}[ -]?\\d{4}\\d?"
+    },
+    {
+      "name": "street_address",
+      "case_insensitive": true,
+      "replace_with": "<REDACTED ADDRESS>",
+      "pattern": "(\\d+\\s*(\\w+ ){1,2}(street|st|road|rd|avenue|ave|drive|dr|loop|court|ct|circle|cir|lane|ln|boulevard|blvd|way)\\.?\\b(\\s+(apt|bldg|dept|fl|hngr|lot|pier|rm|ste|slip|trlr|unit|#)\\.? *[a-z0-9-]+\\b)?)|(P\\.? ?O\\.? *Box +\\d+)"
+    },
+    {
+      "name": "phone_number",
+      "case_insensitive": false,
+      "replace_with": "<REDACTED PHONE NUMBER>",
+      "pattern": "(\\(?\\+?[0-9]{1,2}\\)?[-. ]?)?(\\(?[0-9]{3}\\)?|[0-9]{3})[-. ]?([0-9]{3}[-. ]?[0-9]{4}|\\b[A-Z0-9]{7}\\b)"
+    },
+    {
+      "name": "us_social_security_number",
+      "case_insensitive": false,
+      "replace_with": "<REDACTED SOCIAL SECURITY NUMBER>",
+      "pattern": "\\b\\d{3}[ -.]\\d{2}[ -.]\\d{4}\\b"
+    },
+    {
+      "name": "email_address",
+      "case_insensitive": true,
+      "replace_with": "<REDACTED EMAIL>",
+      "pattern": "([a-z0-9_\\-.+]+)\u0040\\w+(\\.\\w+)*"
+    },
+    {
+      "name": "secret",
+      "case_insensitive": true,
+      "replace_with": "<REDACTED SECRET>",
+      "pattern": "(pass(word|phrase)?|secret): \\S+"
+    },
+    {
+      "name": "credentials",
+      "case_insensitive": true,
+      "replace_with": "<REDACTED CREDENTIALS>",
+      "pattern": "(login( cred(ential)?s| info(rmation)?)?|cred(ential)?s) ?:\\s*\\S+\\s+/?\\s*\\S+"
+    },
+    {
+      "name": "date_of_birth",
+      "case_insensitive": true,
+      "replace_with": "<REDACTED DATE OF BIRTH>",
+      "pattern": "(\\b(?:d\\.?o\\.?b\\.?|date[ _]?of[ _]?birth|born|birthday)[\\t :=\"']{0,8}(?:on[ ]{1,3})?)(?:(?:1[0-2]|0?[1-9])/(?:3[01]|[12][0-9]|0?[1-9])/(?:18|19|20)[0-9]{2}|(?:3[01]|[12][0-9]|0?[1-9])-(?:1[0-2]|0?[1-9])-(?:18|19|20)[0-9]{2}|(?:18|19|20)[0-9]{2}-(?:1[0-2]|0?[1-9])-(?:3[01]|[12][0-9]|0?[1-9])|(?:January|Jan|February|Feb|March|Mar|April|Apr|May|June|Jun|July|Jul|August|Aug|September|Sep|October|Oct|November|Nov|December|Dec) (?:3[01]|[12][0-9]|0?[1-9]),? (?:18|19|20)[0-9]{2}|(?:3[01]|[12][0-9]|0?[1-9]) (?:January|Jan|February|Feb|March|Mar|April|Apr|May|June|Jun|July|Jul|August|Aug|September|Sep|October|Oct|November|Nov|December|Dec) (?:18|19|20)[0-9]{2})",
+      "keep_group": 1,
+      "not_followed_by": "[A-Za-z0-9_]|T[0-9]"
+    },
+    {
+      "name": "medical_record_number",
+      "case_insensitive": true,
+      "replace_with": "<REDACTED MEDICAL RECORD NUMBER>",
+      "pattern": "\\b((?:MRN|medical record(?: number)?)[\"']?[\\t :#=]{1,8}[\"']?)([a-z0-9][a-z0-9-]{2,39})\\b",
+      "keep_group": 1,
+      "requires_in_group": {
+        "group": 2,
+        "pattern": "[0-9]"
+      }
+    }
+  ],
+  "json_cue_keys": {
+    "DOB: ": [
+      "dob",
+      "date of birth",
+      "birthday",
+      "born"
+    ],
+    "MRN: ": [
+      "mrn",
+      "medical record",
+      "medical record number"
+    ]
+  },
+  "cases": [
+    {
+      "id": "email-basic",
+      "input": "Contact me at jane.doe\u0040example.com today",
+      "expected": "Contact me at <REDACTED EMAIL> today"
+    },
+    {
+      "id": "email-plus-subdomain",
+      "input": "ping ops+alerts\u0040mail.example.org when done",
+      "expected": "ping <REDACTED EMAIL> when done"
+    },
+    {
+      "id": "email-two",
+      "input": "cc a.b\u0040example.co and c_d\u0040example.net",
+      "expected": "cc <REDACTED EMAIL> and <REDACTED EMAIL>"
+    },
+    {
+      "id": "card-spaced",
+      "input": "Card 4111 1111 1111 1111 on file",
+      "expected": "Card <REDACTED CREDIT CARD NUMBER> on file"
+    },
+    {
+      "id": "card-dashed",
+      "input": "card 5500-0000-0000-0004 declined",
+      "expected": "card <REDACTED CREDIT CARD NUMBER> declined"
+    },
+    {
+      "id": "card-plain",
+      "input": "number 4111111111111111 ok",
+      "expected": "number <REDACTED CREDIT CARD NUMBER> ok"
+    },
+    {
+      "id": "card-amex",
+      "input": "Amex 3782-822463-10005 expires soon",
+      "expected": "Amex <REDACTED CREDIT CARD NUMBER> expires soon"
+    },
+    {
+      "id": "phone-parens",
+      "input": "Call (555) 123-4567 now",
+      "expected": "Call <REDACTED PHONE NUMBER> now"
+    },
+    {
+      "id": "phone-dots-intl",
+      "input": "Reach me on +1 555.123.4567 tonight",
+      "expected": "Reach me on <REDACTED PHONE NUMBER> tonight"
+    },
+    {
+      "id": "phone-dashes",
+      "input": "my cell is 555-123-4567",
+      "expected": "my cell is <REDACTED PHONE NUMBER>"
+    },
+    {
+      "id": "ssn-dashed",
+      "input": "SSN 123-45-6789 on the form",
+      "expected": "SSN <REDACTED SOCIAL SECURITY NUMBER> on the form"
+    },
+    {
+      "id": "ssn-spaced",
+      "input": "ssn is 123 45 6789",
+      "expected": "ssn is <REDACTED SOCIAL SECURITY NUMBER>"
+    },
+    {
+      "id": "secret-password",
+      "input": "password: hunter2 please",
+      "expected": "<REDACTED SECRET> please"
+    },
+    {
+      "id": "secret-secret",
+      "input": "the secret: abc123xyz is old",
+      "expected": "the <REDACTED SECRET> is old"
+    },
+    {
+      "id": "secret-passphrase",
+      "input": "passphrase: correct-horse-battery",
+      "expected": "<REDACTED SECRET>"
+    },
+    {
+      "id": "credentials-slash",
+      "input": "credentials: admin / s3cretpass",
+      "expected": "<REDACTED CREDENTIALS>"
+    },
+    {
+      "id": "credentials-login",
+      "input": "login: alice hunter22",
+      "expected": "<REDACTED CREDENTIALS>"
+    },
+    {
+      "id": "address-street",
+      "input": "Ship to 123 Main Street, Springfield",
+      "expected": "Ship to <REDACTED ADDRESS>, Springfield"
+    },
+    {
+      "id": "address-apt",
+      "input": "lives at 42 Elm Ave apt 4B now",
+      "expected": "lives at <REDACTED ADDRESS> now"
+    },
+    {
+      "id": "address-po-box",
+      "input": "mail it to P.O. Box 4521 please",
+      "expected": "mail it to <REDACTED ADDRESS> please"
+    },
+    {
+      "id": "keep-digits",
+      "input": "Order 12345 shipped in 3 boxes",
+      "expected": "Order 12345 shipped in 3 boxes"
+    },
+    {
+      "id": "keep-url",
+      "input": "Docs at https://example.com/docs?page=2",
+      "expected": "Docs at https://example.com/docs?page=2"
+    },
+    {
+      "id": "keep-name",
+      "input": "My name is Alice Johnson",
+      "expected": "My name is Alice Johnson"
+    },
+    {
+      "id": "keep-zip",
+      "input": "zip 94107",
+      "expected": "zip 94107"
+    },
+    {
+      "id": "keep-ip",
+      "input": "server 10.0.0.12 restarted",
+      "expected": "server 10.0.0.12 restarted"
+    },
+    {
+      "id": "keep-username",
+      "input": "user: bob",
+      "expected": "user: bob"
+    },
+    {
+      "id": "keep-password-no-colon-space",
+      "input": "password is hunter2",
+      "expected": "password is hunter2"
+    },
+    {
+      "id": "mixed",
+      "input": "Email jane\u0040example.com or call 555-123-4567.",
+      "expected": "Email <REDACTED EMAIL> or call <REDACTED PHONE NUMBER>."
+    },
+    {
+      "id": "empty-like",
+      "input": "no personal data here",
+      "expected": "no personal data here"
+    }
+  ],
+  "cue_cases": [
+    {
+      "id": "dob-iso",
+      "input": "Patient DOB: 1990-01-05, follow up Tuesday",
+      "expected": "Patient DOB: <REDACTED DATE OF BIRTH>, follow up Tuesday"
+    },
+    {
+      "id": "dob-dotted-us",
+      "input": "D.O.B. 01/05/1990 per chart",
+      "expected": "D.O.B. <REDACTED DATE OF BIRTH> per chart"
+    },
+    {
+      "id": "dob-day-month-name",
+      "input": "date of birth: 5 March 1990",
+      "expected": "date of birth: <REDACTED DATE OF BIRTH>"
+    },
+    {
+      "id": "dob-underscored-quoted",
+      "input": "Date_of_birth=\"1990-01-05\"",
+      "expected": "Date_of_birth=\"<REDACTED DATE OF BIRTH>\""
+    },
+    {
+      "id": "born-on-month-name",
+      "input": "She was born on March 5, 1990 in Ohio",
+      "expected": "She was born on <REDACTED DATE OF BIRTH> in Ohio"
+    },
+    {
+      "id": "born-short-month-two-digit-day",
+      "input": "born 1990-1-12 at home",
+      "expected": "born <REDACTED DATE OF BIRTH> at home"
+    },
+    {
+      "id": "birthday-abbreviated-month",
+      "input": "birthday: Jan 5 1990!",
+      "expected": "birthday: <REDACTED DATE OF BIRTH>!"
+    },
+    {
+      "id": "dob-timestamp-untouched",
+      "input": "DOB: 1990-01-05T10:00:00Z logged",
+      "expected": "DOB: 1990-01-05T10:00:00Z logged"
+    },
+    {
+      "id": "dob-digit-after-date-untouched",
+      "input": "DOB 1990-01-055",
+      "expected": "DOB 1990-01-055"
+    },
+    {
+      "id": "date-without-cue-untouched",
+      "input": "created 1990-01-05, no cue here",
+      "expected": "created 1990-01-05, no cue here"
+    },
+    {
+      "id": "dob-invalid-month-untouched",
+      "input": "dob: 1990-13-01",
+      "expected": "dob: 1990-13-01"
+    },
+    {
+      "id": "born-out-of-range-year-untouched",
+      "input": "born 1799-01-01",
+      "expected": "born 1799-01-01"
+    },
+    {
+      "id": "dob-no-space",
+      "input": "DOB:1990-01-05",
+      "expected": "DOB:<REDACTED DATE OF BIRTH>"
+    },
+    {
+      "id": "mrn-alphanumeric",
+      "input": "MRN: AB-12345 on file",
+      "expected": "MRN: <REDACTED MEDICAL RECORD NUMBER> on file"
+    },
+    {
+      "id": "mrn-long-cue-hash",
+      "input": "medical record number #00123456 transferred",
+      "expected": "medical record number #<REDACTED MEDICAL RECORD NUMBER> transferred"
+    },
+    {
+      "id": "mrn-without-digit-untouched",
+      "input": "MRN: pending review",
+      "expected": "MRN: pending review"
+    },
+    {
+      "id": "mrn-equals",
+      "input": "mrn=12-34",
+      "expected": "mrn=<REDACTED MEDICAL RECORD NUMBER>"
+    },
+    {
+      "id": "phone-dob-mrn-together",
+      "input": "Call 555-123-4567, DOB: 02/29/2000, MRN: X9-77",
+      "expected": "Call <REDACTED PHONE NUMBER>, DOB: <REDACTED DATE OF BIRTH>, MRN: <REDACTED MEDICAL RECORD NUMBER>"
+    },
+    {
+      "id": "dob-and-email",
+      "input": "DOB: 1990-01-05 email jane\u0040example.com",
+      "expected": "DOB: <REDACTED DATE OF BIRTH> email <REDACTED EMAIL>"
+    }
+  ],
+  "json_cases": [
+    {
+      "id": "json-cue-keys-string-and-number",
+      "input": "{\"dob\":\"1990-01-01\",\"mrn\":12345,\"note\":\"ok\"}",
+      "expected": "{\"dob\":\"<REDACTED DATE OF BIRTH>\",\"mrn\":\"<REDACTED MEDICAL RECORD NUMBER>\",\"note\":\"ok\"}"
+    },
+    {
+      "id": "json-spaced-cue-key-and-escaped-email",
+      "input": "{\"Date of Birth\":\"5 March 1990\",\"email\":\"jane\\u0040example.com\"}",
+      "expected": "{\"Date of Birth\":\"<REDACTED DATE OF BIRTH>\",\"email\":\"<REDACTED EMAIL>\"}"
+    },
+    {
+      "id": "json-nested-cue-keys",
+      "input": "{\"patient\":{\"medical_record_number\":\"AB-1234\"},\"born\":\"1990-01-05\"}",
+      "expected": "{\"patient\":{\"medical_record_number\":\"<REDACTED MEDICAL RECORD NUMBER>\"},\"born\":\"<REDACTED DATE OF BIRTH>\"}"
+    },
+    {
+      "id": "json-array-of-strings",
+      "input": "[\"DOB: 1990-01-05\", \"x\"]",
+      "expected": "[\"DOB: <REDACTED DATE OF BIRTH>\", \"x\"]"
+    },
+    {
+      "id": "json-mrn-without-digit-untouched",
+      "input": "{\"mrn\":\"none\"}",
+      "expected": "{\"mrn\":\"none\"}"
+    },
+    {
+      "id": "json-number-pii-redacted-by-text-rules",
+      "input": "{\"order_id\":4111111111111111}",
+      "expected": "{\"order_id\":<REDACTED CREDIT CARD NUMBER>}"
+    },
+    {
+      "id": "json-email-key-redacted-by-text-rules",
+      "input": "{\"jane\u0040example.com\":\"ok\"}",
+      "expected": "{\"<REDACTED EMAIL>\":\"ok\"}"
+    },
+    {
+      "id": "json-truncated-plain-unchanged",
+      "input": "{\"note\":\"unfinished",
+      "expected": "{\"note\":\"unfinished"
+    },
+    {
+      "id": "json-truncated-escaped-email",
+      "input": "{\"note\":\"jane\\u0040example.com",
+      "expected": "{\"note\":\"<REDACTED EMAIL>"
+    },
+    {
+      "id": "json-truncated-after-cue-key",
+      "input": "{\"dob\":\"1990-01-05\",\"mrn\":\"AB-1234",
+      "expected": "{\"dob\":\"<REDACTED DATE OF BIRTH>\",\"mrn\":\"<REDACTED MEDICAL RECORD NUMBER>"
+    }
+  ]
+}

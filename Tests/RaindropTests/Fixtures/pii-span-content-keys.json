@@ -1,0 +1,389 @@
+{
+  "format": 1,
+  "content_suffixes": [
+    "input",
+    "output",
+    "inputs",
+    "outputs",
+    "args",
+    "arguments",
+    "result",
+    "results",
+    "content",
+    "text",
+    "messages",
+    "prompt",
+    "completion",
+    "instructions",
+    "system_instructions",
+    "reasoning",
+    "reasoningText",
+    "thinking",
+    "toolCalls",
+    "tool_calls",
+    "object",
+    "value",
+    "values",
+    "intent",
+    "query",
+    "tool_input"
+  ],
+  "content_keys": [
+    "ai.prompt.system",
+    "ai.subagent.result",
+    "agent.session.title",
+    "error.message",
+    "exception.message",
+    "exception.stacktrace"
+  ],
+  "never_touched_prefixes": [
+    "traceloop.association.properties.",
+    "ai.telemetry.metadata.",
+    "ai.settings.context.",
+    "raindrop.app."
+  ],
+  "event_property_copies": {
+    "prefixes": [
+      "traceloop.association.properties.",
+      "ai.telemetry.metadata.traceloop.association.properties."
+    ],
+    "keys": [
+      "ai.telemetry.metadata.raindrop.properties"
+    ],
+    "sdk_own_names": [
+      "user_id",
+      "event_id",
+      "convo_id",
+      "event_name"
+    ],
+    "sdk_own_name_prefixes": [
+      "raindrop."
+    ]
+  },
+  "cases": [
+    {
+      "key": "traceloop.entity.input",
+      "redact": true
+    },
+    {
+      "key": "traceloop.entity.output",
+      "redact": true
+    },
+    {
+      "key": "ai.agent.inputs",
+      "redact": true
+    },
+    {
+      "key": "ai.agent.outputs",
+      "redact": true
+    },
+    {
+      "key": "ai.toolCall.args",
+      "redact": true
+    },
+    {
+      "key": "gen_ai.tool.call.arguments",
+      "redact": true
+    },
+    {
+      "key": "ai.toolCall.result",
+      "redact": true
+    },
+    {
+      "key": "ai.retrieval.results",
+      "redact": true
+    },
+    {
+      "key": "gen_ai.prompt.0.content",
+      "redact": true
+    },
+    {
+      "key": "ai.response.text",
+      "redact": true
+    },
+    {
+      "key": "ai.prompt.messages",
+      "redact": true
+    },
+    {
+      "key": "gen_ai.input.messages",
+      "redact": true
+    },
+    {
+      "key": "ai.prompt",
+      "redact": true
+    },
+    {
+      "key": "gen_ai.completion",
+      "redact": true
+    },
+    {
+      "key": "ai.agent.instructions",
+      "redact": true
+    },
+    {
+      "key": "gen_ai.system_instructions",
+      "redact": true
+    },
+    {
+      "key": "ai.response.reasoning",
+      "redact": true
+    },
+    {
+      "key": "ai.response.reasoningText",
+      "redact": true
+    },
+    {
+      "key": "ai.response.thinking",
+      "redact": true
+    },
+    {
+      "key": "ai.response.toolCalls",
+      "redact": true
+    },
+    {
+      "key": "gen_ai.response.tool_calls",
+      "redact": true
+    },
+    {
+      "key": "ai.response.object",
+      "redact": true
+    },
+    {
+      "key": "ai.embed.value",
+      "redact": true
+    },
+    {
+      "key": "ai.embedMany.values",
+      "redact": true
+    },
+    {
+      "key": "agent.intent",
+      "redact": true
+    },
+    {
+      "key": "retrieval.query",
+      "redact": true
+    },
+    {
+      "key": "agent.tool_input",
+      "redact": true
+    },
+    {
+      "key": "input",
+      "redact": true
+    },
+    {
+      "key": "ai.prompt.system",
+      "redact": true
+    },
+    {
+      "key": "ai.subagent.result",
+      "redact": true
+    },
+    {
+      "key": "agent.session.title",
+      "redact": true
+    },
+    {
+      "key": "error.message",
+      "redact": true
+    },
+    {
+      "key": "exception.message",
+      "redact": true
+    },
+    {
+      "key": "exception.stacktrace",
+      "redact": true
+    },
+    {
+      "key": "gen_ai.request.model",
+      "redact": false
+    },
+    {
+      "key": "gen_ai.response.model",
+      "redact": false
+    },
+    {
+      "key": "ai.model.id",
+      "redact": false
+    },
+    {
+      "key": "ai.model.provider",
+      "redact": false
+    },
+    {
+      "key": "gen_ai.usage.input_tokens",
+      "redact": false
+    },
+    {
+      "key": "ai.usage.promptTokens",
+      "redact": false
+    },
+    {
+      "key": "gen_ai.response.finish_reasons",
+      "redact": false
+    },
+    {
+      "key": "ai.toolCall.id",
+      "redact": false
+    },
+    {
+      "key": "ai.toolCall.name",
+      "redact": false
+    },
+    {
+      "key": "ai.operationId",
+      "redact": false
+    },
+    {
+      "key": "ai.telemetry.functionId",
+      "redact": false
+    },
+    {
+      "key": "ai.prompt.tools",
+      "redact": false
+    },
+    {
+      "key": "ai.prompt.messages.truncated",
+      "redact": false
+    },
+    {
+      "key": "error.type",
+      "redact": false
+    },
+    {
+      "key": "exception.type",
+      "redact": false
+    },
+    {
+      "key": "ai.settings.context",
+      "redact": false
+    },
+    {
+      "key": "ai.response.Text",
+      "redact": false
+    },
+    {
+      "key": "ai.response.subtext",
+      "redact": false
+    },
+    {
+      "key": "agent.session.titles",
+      "redact": false
+    },
+    {
+      "key": "ai.telemetry.metadata.raindrop.eventId",
+      "redact": false
+    },
+    {
+      "key": "ai.telemetry.metadata.raindrop.userId",
+      "redact": false
+    },
+    {
+      "key": "ai.telemetry.metadata.raindrop.convoId",
+      "redact": false
+    },
+    {
+      "key": "ai.telemetry.metadata.query",
+      "redact": false
+    },
+    {
+      "key": "traceloop.association.properties.user_id",
+      "redact": false
+    },
+    {
+      "key": "traceloop.association.properties.input",
+      "redact": true
+    },
+    {
+      "key": "ai.settings.context.text",
+      "redact": false
+    },
+    {
+      "key": "raindrop.app.content",
+      "redact": false
+    },
+    {
+      "key": "ai.telemetry.metadata.raindrop.convoId",
+      "redact": true,
+      "span_fields": [
+        "ai.telemetry.metadata.raindrop.convoId"
+      ]
+    },
+    {
+      "key": "ai.telemetry.metadata.raindrop.eventName",
+      "redact": true,
+      "span_fields": [
+        "ai.telemetry.metadata.raindrop.event*"
+      ]
+    },
+    {
+      "key": "ai.telemetry.metadata.raindrop.eventId",
+      "redact": true,
+      "span_fields": [
+        "ai.telemetry.metadata.raindrop.event*"
+      ]
+    },
+    {
+      "key": "gen_ai.request.model",
+      "redact": true,
+      "span_fields": [
+        "gen_ai.request.*"
+      ]
+    },
+    {
+      "key": "gen_ai.response.model",
+      "redact": false,
+      "span_fields": [
+        "gen_ai.request.*"
+      ]
+    },
+    {
+      "key": "custom.note",
+      "redact": true,
+      "span_fields": [
+        "custom.note"
+      ]
+    },
+    {
+      "key": "custom.notes",
+      "redact": false,
+      "span_fields": [
+        "custom.note"
+      ]
+    },
+    {
+      "key": "ai.response.text",
+      "redact": true,
+      "span_fields": [
+        "custom.note"
+      ]
+    },
+    {
+      "key": "traceloop.association.properties.plan",
+      "redact": true
+    },
+    {
+      "key": "ai.telemetry.metadata.traceloop.association.properties.note",
+      "redact": true
+    },
+    {
+      "key": "ai.telemetry.metadata.raindrop.properties",
+      "redact": true
+    },
+    {
+      "key": "traceloop.association.properties.event_name",
+      "redact": false
+    },
+    {
+      "key": "traceloop.association.properties.convo_id",
+      "redact": false
+    },
+    {
+      "key": "traceloop.association.properties.raindrop.app.git.commit",
+      "redact": false
+    }
+  ]
+}

@@ -62,15 +62,37 @@ public struct RaindropConfiguration: Sendable {
     /// Cap on `input` / `output`, in Unicode codepoints.
     public var maxTextFieldChars: Int = 1_000_000
 
-    /// Redact common PII (emails, phone numbers, card numbers, SSNs, street addresses,
-    /// passwords/credentials) before sending, using the same patterns and placeholders as
-    /// the TypeScript SDK's `redactPii`. Applies to AI `input` / `output` on events and
-    /// interactions, and to span content: prompts and messages (`ai.prompt*`,
-    /// `gen_ai.prompt.*.content`), responses (`ai.response.text`,
-    /// `gen_ai.completion.*.content`), tool input/output (`traceloop.entity.*`) and span
-    /// error messages. Ids, names, properties and other attributes are left as they are.
-    /// Runs before `beforeSend`. Off by default.
+    /// Redact common PII before sending, using the same rules and placeholders as the
+    /// TypeScript SDK's `redactPii`: emails, phone numbers, card numbers, SSNs, street
+    /// addresses, passwords/credentials, and a date of birth or medical record number after a
+    /// cue (`DOB: 1990-01-05` becomes `DOB: <REDACTED DATE OF BIRTH>`). Applies to AI `input` /
+    /// `output` on events and interactions; text that looks like JSON is redacted per string
+    /// value first, so escaped values are caught too. A field is redacted whole before it is
+    /// cut to `maxTextFieldChars`. Ids, names and properties are left as they are.
+    ///
+    /// Span content is not touched: turn on `redactTracePii` for that. Runs before `mask` and
+    /// `beforeSend`. Off by default.
     public var redactPii: Bool = false
+
+    /// Redact PII in trace span content before export, with the same rules as `redactPii`:
+    /// prompts and messages, responses, reasoning, tool arguments and results, error messages
+    /// and the span status message. JSON-valued content is redacted per string value and
+    /// stays valid JSON. Ids, model names, token counts and other metadata are left as they
+    /// are. A span that can't be redacted is dropped, never sent unredacted. Off by default.
+    public var redactTracePii: Bool = false
+
+    /// Your own masking function, for sensitive content the built-in rules can't recognize
+    /// (names, medical terms, internal ids). Called just before each payload is sent, after
+    /// redaction when that is on, with each content field and its `MaskContext`: event
+    /// `ai_data.input` / `ai_data.output`, `properties` and `attachments`; signal
+    /// `properties` (with `comment` and `after`); identify `traits`; span content attributes
+    /// and `status.message`. Ids, the user id, event names, models and timing are never
+    /// passed, nor the SDK's own properties. Runs off the caller's thread; keep it fast.
+    ///
+    /// Fail-closed: if it throws or returns the wrong type, the field is sent as
+    /// `"<MASK FAILED>"` (an object as `{"error": "<MASK FAILED>"}`, attachments as `[]`).
+    /// The payload is still sent, and a warning names only the error's type.
+    public var mask: RaindropMask?
 
     /// Application identity attached to events and spans as `raindrop.app.commit_sha`,
     /// `raindrop.app.commit_dirty` and `raindrop.app.branch` (caller properties win).
@@ -120,6 +142,13 @@ public struct RaindropConfiguration: Sendable {
     }
 
     var isEnabled: Bool { !(writeKey ?? "").isEmpty }
+
+    /// Span content is redacted (`redactTracePii`; `redactPii` alone never touches spans).
+    var redactsSpans: Bool { redactTracePii }
+
+    /// Span content is processed before export, so its size cap is applied then (after
+    /// redaction and the mask) rather than when an attribute is set.
+    var processesSpanContent: Bool { redactsSpans || mask != nil }
 
     public static var defaultStorageDirectory: URL? {
         #if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
