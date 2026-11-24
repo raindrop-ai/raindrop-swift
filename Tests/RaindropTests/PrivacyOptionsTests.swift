@@ -87,9 +87,21 @@ private let tagMask: RaindropMask = { value, ctx in
         #expect(prompt.unicodeScalars.count == 60)
     }
 
-    @Test func redactPiiStillCoversSpansForCompatibility() async {
-        let s = spanStrings(await run { $0.redactPii = true })
-        #expect(value(s, "ai.response.text") == "Card <REDACTED CREDIT CARD NUMBER> on file")
+    @Test func redactPiiAloneNeverTouchesSpans() async {
+        let t = await run { $0.redactPii = true }
+        let s = spanStrings(t)
+        #expect(value(s, "ai.response.text") == "Card 4111 1111 1111 1111 on file")
+        #expect(value(s, "status.message") == "failed for \(address)")
+        // Events are still redacted.
+        let event = t.requests("events/track_partial").map { String(decoding: $0.body, as: UTF8.self) }.joined()
+        #expect(event.contains("hi <REDACTED EMAIL>") && !event.contains("hi jane.doe"))
+    }
+
+    @Test func bothOptionsTogether() async {
+        let t = await run { $0.redactPii = true; $0.redactTracePii = true }
+        #expect(value(spanStrings(t), "ai.response.text") == "Card <REDACTED CREDIT CARD NUMBER> on file")
+        let event = t.requests("events/track_partial").map { String(decoding: $0.body, as: UTF8.self) }.joined()
+        #expect(event.contains("hi <REDACTED EMAIL>"))
     }
 }
 

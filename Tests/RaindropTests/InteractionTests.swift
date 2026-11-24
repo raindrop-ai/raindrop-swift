@@ -358,7 +358,7 @@ private func hex(_ b64: Any?) -> String {
 
     private func run(_ t: FakeTransport, redact: Bool, hookSaw: Seen? = nil) async {
         let c = makeClient(t) {
-            $0.redactPii = redact
+            $0.redactTracePii = redact
             if let hookSaw {
                 $0.beforeSend = { p in
                     if p.route == "traces" { hookSaw.add(String(decoding: JSONWriter.data(.object(p.body)), as: UTF8.self)) }

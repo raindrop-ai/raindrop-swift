@@ -70,8 +70,8 @@ public struct RaindropConfiguration: Sendable {
     /// value first, so escaped values are caught too. A field is redacted whole before it is
     /// cut to `maxTextFieldChars`. Ids, names and properties are left as they are.
     ///
-    /// For compatibility with earlier releases this also redacts span content, as
-    /// `redactTracePii` does. Runs before `mask` and `beforeSend`. Off by default.
+    /// Span content is not touched: turn on `redactTracePii` for that. Runs before `mask` and
+    /// `beforeSend`. Off by default.
     public var redactPii: Bool = false
 
     /// Redact PII in trace span content before export, with the same rules as `redactPii`:
@@ -143,8 +143,8 @@ public struct RaindropConfiguration: Sendable {
 
     var isEnabled: Bool { !(writeKey ?? "").isEmpty }
 
-    /// Span content is redacted (`redactTracePii`, or `redactPii` for compatibility).
-    var redactsSpans: Bool { redactPii || redactTracePii }
+    /// Span content is redacted (`redactTracePii`; `redactPii` alone never touches spans).
+    var redactsSpans: Bool { redactTracePii }
 
     /// Span content is processed before export, so its size cap is applied then (after
     /// redaction and the mask) rather than when an attribute is set.
