@@ -36,6 +36,7 @@ final class AppModel: ObservableObject {
             config.flushInterval = .milliseconds(Int64(seconds * 1000))
         }
         config.redactPii = true
+        config.redactTracePii = true
         if env["RD_WORKSHOP"] == "1" {
             config.localWorkshopURL = URL(string: sink + "/workshop")
         }
@@ -95,7 +96,8 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// PII in the event, a model span and a tool span; `redactPii` must scrub all of it.
+    /// PII in the event, a model span and a tool span; `redactPii` (events) and `redactTracePii`
+    /// (spans) must scrub all of it.
     func trackPII() async {
         let pii = "I'm Jane Doe, jane.doe@example.com, 415-555-0134, 123 Main Street"
         let ix = client.begin(BeginOptions(userId: "ios-user", event: "ios_pii_turn", input: pii))
